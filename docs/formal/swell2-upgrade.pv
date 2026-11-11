@@ -1,0 +1,136 @@
+(* Swell Protocol DRAFT 2, spec section 6.4: an existing libsignal chat moves
+   to a Swell Protocol session. The OFFER (I's bundle) and the HELLO travel
+   INSIDE the existing libsignal session; I's first reply (READY) is the first
+   Swell Protocol DATA message on the open network. ProVerif 2.05.
+
+   run.sh builds variants by uncommenting lines of the form (*M:NAME ... *).
+
+   Abstractions (read before trusting a result):
+   - The established libsignal session is a private channel `ls` between the
+     two phones: confidential and authenticated, as libsignal is for an
+     honest, unchanged identity. LSOPEN makes it public (as if libsignal were
+     broken or the attacker were the libsignal peer): attacks are expected.
+   - One offer, one I session, one J session. Same primitive abstractions as
+     swell2-handshake.pv (ideal KEM, random-oracle KDFs, perfect AEAD).
+   - The binding (channel, both libsignal identity keys, offer id) is a
+     public value `bnd` in the transcript; its exact bytes are not modelled.
+   - The engine's acceptance rules (whisper type only, initiator by key
+     order, kept identity equals session identity) are what makes `ls`
+     private and authenticated; they are code, not modelled.
+   - QUANTUM hands every X25519 private key to the attacker, but not the
+     libsignal channel (libsignal's own PQXDH / SPQR protects it; that is
+     libsignal's claim, not ours). *)
+
+type skey.  type key.  type kdk.  type kek.  type kct.  type nonce.
+
+free c: channel.
+free ls: channel [private].
+(*M:LSOPEN free lspub: channel. *)
+free bnd: bitstring.
+free expT: bitstring.
+free secret_hello: bitstring [private].
+free secret_reply: bitstring [private].
+free probe_rk0: bitstring [private].
+free probe_pq0: bitstring [private].
+const lab_probe: bitstring.
+
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+
+fun kpk(kdk): kek.
+fun kenc(kek, nonce): kct.
+fun kss(kek, nonce): key.
+reduc forall d: kdk, r: nonce; kdec(d, kenc(kpk(d), r)) = kss(kpk(d), r).
+
+fun htr(key, key, key, kek, key, kct, bitstring, bitstring): bitstring.
+fun hs_rk0(bitstring, key, key, key, key): key.
+fun hs_hka(bitstring, key, key, key, key): key.
+fun hs_nhkb(bitstring, key, key, key, key): key.
+fun hs_pq0(bitstring, key, key, key, key): key.
+fun kdf_rk(key, key): key.
+fun kdf_ck(key, key): key.
+fun mkf(key): key.
+fun mcomb(key, key): key.
+fun adh_hello(key, key, kct, bitstring): bitstring.
+fun adh_data(bitstring): bitstring.
+fun adm_hello(bitstring, key, key, kct, bitstring): bitstring.
+fun adm_data(bitstring, bitstring): bitstring.
+fun henc(key, key, bitstring): bitstring.
+reduc forall x: key, k: key, ad: bitstring; hdec(henc(x, k, ad), k, ad) = x.
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+
+event JStarted(key, key, key).
+event IAccepts(key, key, key).
+event ISendsReply(key, key, bitstring, key).
+event JAccepts(key, key, bitstring, key).
+
+let Inviter =
+  new idskI: skey; new epk_sk: skey; new dk: kdk;
+  let ID_I = pk(idskI) in let EPK = pk(epk_sk) in let EK = kpk(dk) in
+  (*M:QUANTUM out(c, (idskI, epk_sk)); *)
+  (* OFFER inside libsignal *)
+  out(ls, (ID_I, EPK, EK, expT));
+  (*M:LSOPEN out(lspub, (ID_I, EPK, EK, expT)); *)
+  (* HELLO inside libsignal *)
+  in(ls, (ID_J: key, E: key, ct: kct, hct: bitstring, body: bitstring));
+  (*M:LSOPEN in(lspub, (ID_J: key, E: key, ct: kct, hct: bitstring, body: bitstring)); *)
+  let dh1 = dh(epk_sk, ID_J) in let dh2 = dh(idskI, E) in let dh3 = dh(epk_sk, E) in
+  let ss = kdec(dk, ct) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, bnd, expT) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let xpub = hdec(hct, hka, adh_hello(ID_J, E, ct, T)) in
+  let RK1 = kdf_rk(RK0, dh(epk_sk, xpub)) in
+  let CKr1 = kdf_ck(RK0, dh(epk_sk, xpub)) in
+  let hello = sdec(body, mcomb(mkf(CKr1), PQ0), adm_hello(T, ID_J, E, ct, hct)) in
+  event IAccepts(ID_I, ID_J, RK0);
+  new y1: skey;
+  (*M:QUANTUM out(c, y1); *)
+  let RK2 = kdf_rk(RK1, dh(y1, xpub)) in
+  let CKs2 = kdf_ck(RK1, dh(y1, xpub)) in
+  let hct2 = henc(pk(y1), nhkb, adh_data(T)) in
+  event ISendsReply(ID_I, ID_J, T, RK2);
+  (* READY: the first Swell Protocol DATA, on the open network *)
+  out(c, (hct2, senc(secret_reply, mcomb(mkf(CKs2), PQ0), adm_data(T, hct2))));
+  0.
+
+let Joiner =
+  in(ls, (ID_I: key, EPK: key, EK: kek, bex: bitstring));
+  (*M:LSOPEN in(lspub, (ID_I: key, EPK: key, EK: kek, bex: bitstring)); *)
+  new idskJ: skey; new e_sk: skey; new rsk: skey; new r: nonce;
+  (*M:QUANTUM out(c, (idskJ, e_sk, rsk)); *)
+  let ID_J = pk(idskJ) in let E = pk(e_sk) in
+  let ct = kenc(EK, r) in let ss = kss(EK, r) in
+  let dh1 = dh(idskJ, EPK) in let dh2 = dh(e_sk, ID_I) in let dh3 = dh(e_sk, EPK) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, bnd, bex) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let RK1 = kdf_rk(RK0, dh(rsk, EPK)) in
+  let CKs1 = kdf_ck(RK0, dh(rsk, EPK)) in
+  let hct = henc(pk(rsk), hka, adh_hello(ID_J, E, ct, T)) in
+  event JStarted(ID_I, ID_J, RK0);
+  out(ls, (ID_J, E, ct, hct, senc(secret_hello, mcomb(mkf(CKs1), PQ0), adm_hello(T, ID_J, E, ct, hct))));
+  (*M:LSOPEN out(lspub, (ID_J, E, ct, hct, senc(secret_hello, mcomb(mkf(CKs1), PQ0), adm_hello(T, ID_J, E, ct, hct)))); *)
+  out(c, senc(probe_rk0, RK0, lab_probe));
+  out(c, senc(probe_pq0, PQ0, lab_probe));
+  in(c, (hct2: bitstring, body2: bitstring));
+  let ypub = hdec(hct2, nhkb, adh_data(T)) in
+  let RK2 = kdf_rk(RK1, dh(rsk, ypub)) in
+  let CKr2 = kdf_ck(RK1, dh(rsk, ypub)) in
+  let reply = sdec(body2, mcomb(mkf(CKr2), PQ0), adm_data(T, hct2)) in
+  event JAccepts(ID_I, ID_J, T, RK2);
+  0.
+
+(*M:QSEC query attacker(secret_hello); attacker(secret_reply); attacker(probe_rk0); attacker(probe_pq0). *)
+(*M:QSEC query i: key, j: key, t: bitstring, k: key; event(JAccepts(i, j, t, k)). *)
+(*M:QAUTH query i: key, j: key, t: bitstring, k: key; inj-event(JAccepts(i, j, t, k)) ==> inj-event(ISendsReply(i, j, t, k)). *)
+(*M:QAUTH query i: key, j: key, k: key; inj-event(IAccepts(i, j, k)) ==> inj-event(JStarted(i, j, k)). *)
+
+process
+  ( Inviter | Joiner )

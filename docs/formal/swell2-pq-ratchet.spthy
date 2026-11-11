@@ -1,0 +1,178 @@
+theory Swell2PQRatchet
+begin
+
+/*
+  Swell Protocol DRAFT 2 (docs/SWELL-PROTOCOL-SPEC.md), section 7.6: the
+  post-quantum ratchet. Tamarin 1.12.
+
+  Question: after a phone theft, does the conversation become secret again
+  against an attacker who ALSO breaks every X25519 key (quantum computer)?
+  Draft 1 failed this (FORMAL-RESULTS A3). Draft 2 mixes an ML-KEM epoch key
+  PQ_e into every message key: mk = combine(mk_dr, PQ_e).
+
+  Abstraction (read before trusting a result):
+  - The Double Ratchet is given to the attacker completely: every message's
+    chain-step key mk_dr is public (Out(~drk) below). This is what a quantum
+    attacker who copied the phone once gets, since it can follow every later
+    X25519 step. Giving the attacker MORE than it has keeps secrecy results
+    sound; the classical properties of the Double Ratchet are the separate
+    draft 1 model (swell1-ratchet.spthy), unchanged by draft 2.
+  - ML-KEM-768 is an ideal KEM, modelled as public-key encryption of a fresh
+    shared secret: ct = aenc(~ss, ek), ek = pk(~dk). It is NOT broken by the
+    quantum attacker. HKDF is a random oracle (pq_next, combine).
+  - Epochs 0 to 3, written out (unrolled): epoch 0 from the handshake
+    (assumed secret; ProVerif shows it, swell2-handshake.pv probe_pq0),
+    keygen side I for epochs 1 and 3, J for epoch 2 (spec 7.6).
+  - Pacing, the window of old epoch keys, header encryption, the "repeat on
+    message 0 of a chain" rule and out-of-order delivery are not modelled.
+    Any party may send any number of messages under any epoch key it ever
+    held (!SK is persistent), which only gives the attacker more ciphertexts.
+  - A theft copies one phone's whole PQ state at one moment: the current and
+    previous epoch keys and a pending ML-KEM private key. Each state a phone
+    passes through can be stolen (persistent !Leak with a fresh id, so the
+    lemma can say WHEN the stolen state existed).
+*/
+
+builtins: asymmetric-encryption, symmetric-encryption
+
+functions: pq_next/4, combine/2
+
+rule Setup:
+  [ Fr(~sid), Fr(~k0), Fr(~l) ]
+  --[ Setup(~sid), GenDK(~sid, '0'), LeakMade(~sid, ~l) ]->
+  [ I0(~sid, ~k0), J0(~sid, ~k0), !SK(~sid, '0', ~k0), !Leak(~sid, ~l, ~k0) ]
+
+// ------------------------------------------------ epoch 1: I makes the key
+rule I_KeyGen_1:
+  [ I0(sid, k0), Fr(~dk), Fr(~l) ]
+  --[ GenDK(sid, '1'), GenEK(sid, '1', pk(~dk)), LeakMade(sid, ~l) ]->
+  [ I1w(sid, k0, ~dk), !Leak(sid, ~l, <k0, ~dk>), Out(pk(~dk)) ]
+
+rule J_Encap_1:
+  let ct = aenc(~ss, ek)
+      k1 = pq_next(k0, ~ss, ek, ct)
+  in
+  [ J0(sid, k0), In(ek), Fr(~ss), Fr(~l) ]
+  --[ AcceptEK(sid, '1', ek), GenCT(sid, '1', ct), LeakMade(sid, ~l) ]->
+  [ J1p(sid, k0, k1), !Leak(sid, ~l, <k0, k1>), Out(ct) ]
+
+rule I_Decap_1:
+  let k1 = pq_next(k0, adec(ct, dk), pk(dk), ct) in
+  [ I1w(sid, k0, dk), In(ct), Fr(~l) ]
+  --[ AcceptCT(sid, '1', ct), LeakMade(sid, ~l) ]->
+  [ I1(sid, k0, k1), !SK(sid, '1', k1), !Leak(sid, ~l, <k0, k1>) ]
+
+// J sends under epoch 1 once it saw I use it (spec 7.6 confirmation).
+rule J_Confirm_1:
+  [ J1p(sid, k0, k1) ] --> [ J1(sid, k0, k1), !SK(sid, '1', k1) ]
+
+// ------------------------------------------------ epoch 2: J makes the key
+rule J_KeyGen_2:
+  [ J1(sid, k0, k1), Fr(~dk), Fr(~l) ]
+  --[ GenDK(sid, '2'), GenEK(sid, '2', pk(~dk)), LeakMade(sid, ~l) ]->
+  [ J2w(sid, k1, ~dk), !Leak(sid, ~l, <k1, ~dk>), Out(pk(~dk)) ]
+
+rule I_Encap_2:
+  let ct = aenc(~ss, ek)
+      k2 = pq_next(k1, ~ss, ek, ct)
+  in
+  [ I1(sid, k0, k1), In(ek), Fr(~ss), Fr(~l) ]
+  --[ AcceptEK(sid, '2', ek), GenCT(sid, '2', ct), LeakMade(sid, ~l) ]->
+  [ I2p(sid, k1, k2), !Leak(sid, ~l, <k1, k2>), Out(ct) ]
+
+rule J_Decap_2:
+  let k2 = pq_next(k1, adec(ct, dk), pk(dk), ct) in
+  [ J2w(sid, k1, dk), In(ct), Fr(~l) ]
+  --[ AcceptCT(sid, '2', ct), LeakMade(sid, ~l) ]->
+  [ J2(sid, k1, k2), !SK(sid, '2', k2), !Leak(sid, ~l, <k1, k2>) ]
+
+rule I_Confirm_2:
+  [ I2p(sid, k1, k2) ] --> [ I2(sid, k1, k2), !SK(sid, '2', k2) ]
+
+// ------------------------------------------------ epoch 3: I makes the key
+rule I_KeyGen_3:
+  [ I2(sid, k1, k2), Fr(~dk), Fr(~l) ]
+  --[ GenDK(sid, '3'), GenEK(sid, '3', pk(~dk)), LeakMade(sid, ~l) ]->
+  [ I3w(sid, k2, ~dk), !Leak(sid, ~l, <k2, ~dk>), Out(pk(~dk)) ]
+
+rule J_Encap_3:
+  let ct = aenc(~ss, ek)
+      k3 = pq_next(k2, ~ss, ek, ct)
+  in
+  [ J2(sid, k1, k2), In(ek), Fr(~ss), Fr(~l) ]
+  --[ AcceptEK(sid, '3', ek), GenCT(sid, '3', ct), LeakMade(sid, ~l) ]->
+  [ !SK(sid, '3', k3), !Leak(sid, ~l, <k2, k3>), Out(ct) ]
+
+rule I_Decap_3:
+  let k3 = pq_next(k2, adec(ct, dk), pk(dk), ct) in
+  [ I3w(sid, k2, dk), In(ct), Fr(~l) ]
+  --[ AcceptCT(sid, '3', ct), LeakMade(sid, ~l) ]->
+  [ !SK(sid, '3', k3), !Leak(sid, ~l, <k2, k3>) ]
+
+// ------------------------------------------------ messages, theft
+// A message under epoch e. Its Double Ratchet key ~drk is handed to the
+// attacker (quantum attacker after a theft, see the header).
+rule Send:
+  [ !SK(sid, e, k), Fr(~m), Fr(~drk) ]
+  --[ Secret(sid, e, ~m) ]->
+  [ Out(~drk), Out(senc(~m, combine(~drk, k))) ]
+
+rule Reveal:
+  [ !Leak(sid, l, st) ] --[ Reveal(sid, l), RevealAny(sid) ]-> [ Out(st) ]
+
+// ---------------------------------------------------------------- lemmas
+lemma executable:
+  exists-trace
+  "Ex sid m #i. Secret(sid, '3', m)@i & not (Ex l #r. Reveal(sid, l)@r)"
+
+// P2. Post-quantum recovery after theft, passive attacker while healing
+// (every EK and CT a phone accepted was made by its contact). A message of
+// epoch e can only leak if the stolen state was made no earlier than the
+// step that generated epoch e's ML-KEM key (the keygen step's own state holds
+// that key, hence "not before", not "strictly after"). A first version said
+// "strictly after" and Tamarin falsified it at once with a theft of the
+// Setup state itself (epoch 0 key and theft at the same step), a wording
+// error in the lemma, not in the protocol. So a theft at any moment heals at the first epoch whose
+// key is made after it: at most two epoch changes later (the one in progress
+// may already be compromised through its pending private key).
+lemma pq_recovery_passive:
+  "All sid e m #i #j.
+     Secret(sid, e, m)@i & K(m)@j
+     & (All t ek #a. AcceptEK(sid, t, ek)@a ==> Ex #g. GenEK(sid, t, ek)@g)
+     & (All t ct #a. AcceptCT(sid, t, ct)@a ==> Ex #g. GenCT(sid, t, ct)@g)
+   ==> Ex l #c #r #g. Reveal(sid, l)@r & LeakMade(sid, l)@c & GenDK(sid, e)@g & not (#c < #g)"
+
+// P2 without a theft: every epoch stays secret (harvest now, decrypt later).
+lemma pq_secrecy_no_theft:
+  "All sid e m #i #j. Secret(sid, e, m)@i & K(m)@j ==> Ex l #r. Reveal(sid, l)@r"
+
+// Control: the bound is tight. A theft of J while it holds epoch 2's pending
+// ML-KEM private key exposes epoch 2 messages.
+lemma pq_recovery_tight:
+  exists-trace
+  "Ex sid m #i #j l #c #r #g.
+     Secret(sid, '2', m)@i & K(m)@j & Reveal(sid, l)@r & LeakMade(sid, l)@c & GenDK(sid, '2')@g & not (#c < #g)
+     & (All t ek #a. AcceptEK(sid, t, ek)@a ==> Ex #h. GenEK(sid, t, ek)@h)
+     & (All t ct #a. AcceptCT(sid, t, ct)@a ==> Ex #h. GenCT(sid, t, ct)@h)
+     & not (Ex l2 #r2. Reveal(sid, l2)@r2 & not (#r2 = #r))"
+
+// The concrete case of draft 1's attack A3: with one theft made before
+// epoch 1's key existed, epoch 3 messages stay secret (healed).
+lemma pq_epoch3_after_epoch0_theft_safe:
+  "All sid m #i #j l #c #r.
+     Secret(sid, '3', m)@i & K(m)@j & Reveal(sid, l)@r & LeakMade(sid, l)@c
+     & (All t ek #a. AcceptEK(sid, t, ek)@a ==> Ex #h. GenEK(sid, t, ek)@h)
+     & (All t ct #a. AcceptCT(sid, t, ct)@a ==> Ex #h. GenCT(sid, t, ct)@h)
+     & not (Ex l2 #r2. Reveal(sid, l2)@r2 & not (#r2 = #r))
+   ==> not (Ex #g. GenDK(sid, '1')@g & #c < #g)"
+
+// Expected attack (A2 for the PQ ratchet): an ACTIVE attacker who stole a
+// state injects its own encapsulation key or ciphertext and stays in the
+// middle; healing needs an epoch exchange it did not tamper with. Every
+// ratchet, Signal's included, has this limit.
+lemma pq_recovery_active:
+  "All sid e m #i #j.
+     Secret(sid, e, m)@i & K(m)@j
+   ==> Ex l #c #r #g. Reveal(sid, l)@r & LeakMade(sid, l)@c & GenDK(sid, e)@g & not (#c < #g)"
+
+end

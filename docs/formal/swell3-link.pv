@@ -1,0 +1,249 @@
+(* Swell Protocol DRAFT 3 (docs/SWELL-PROTOCOL-SPEC.md, build 27): one
+   persistent identity key per person (5.1), the invite-path handshake with
+   those keys and the version 5 binding (6.1, 6.2), and the link frames that
+   start or repair a session between two contacts (6.4): OFFER, HELLO,
+   READY, RESET, sealed with LK = KDF(channelId, DH(identity_I, identity_J))
+   and an AD that names sender and receiver. ProVerif 2.05.
+   Written from swell2-upgrade.pv and swell2-handshake.pv (Swell's own models).
+
+   run.sh builds variants by uncommenting lines of the form (*M:NAME ... *).
+   Exactly one of ACTIVE or PASSIVE must be given (it declares `net`).
+
+   What is modelled:
+   - Two honest people with persistent identity keys I (the lower key, makes
+     offers) and J, who are contacts: each knows the other's public key.
+   - UNBOUNDED link sessions on both sides (replication), all under the same
+     two identity keys, plus one invite-path session with the same keys in
+     parallel, so cross-session and cross-protocol use of the identity keys
+     is in the model. RESET frames in both directions, unbounded.
+   - The joiner's HELLO carries READY(offerId) and I's first reply is the
+     first DATA message, as in spec 6.4 steps 2 and 3.
+
+   What is abstracted (read before trusting a result):
+   - Same primitive abstractions as the draft 2 models: abstract X25519
+     (no low-order points; spec 5.1's validity check is what makes this
+     sound for identity keys), ideal ML-KEM, random-oracle KDFs, perfect
+     AEAD. The binding and LK's info fields are abstract functions of
+     their inputs; their exact bytes are in the vectors (kdf.json, link.json).
+   - sentAtMs, the 15-day and 5-minute windows, expiry, "only I offers",
+     "an ACTIVE session is never replaced by an offer", the SYNC answer to
+     an offer and the once-a-day limits are engine rules, not modelled. RESET
+     is modelled only as "who can make one that opens", not what it deletes.
+   - Message keys after the first reply, the PQ epoch ratchet (see
+     swell2-pq-ratchet.spthy) and SwellSig (5.2; not modelled anywhere yet).
+   - QUANTUM hands every X25519 private key (identities and ephemerals) to
+     the attacker as soon as it exists. With ACTIVE the attacker can then
+     forge link frames (they are classical, D16), so secrecy is expected to
+     fail. With PASSIVE the frames travel on a private channel and the
+     attacker only gets copies: the "record now, decrypt later" attacker.
+   - FS hands both identity secrets to the attacker in a later phase. *)
+
+type skey.  type key.  type kdk.  type kek.  type kct.  type nonce.
+
+free c: channel.
+(*M:ACTIVE free net: channel. *)
+(*M:PASSIVE free net: channel [private]. *)
+free oob: channel [private].          (* the invite, shown in person or sent out of band *)
+free chan: bitstring.                 (* channelId of the contact, public in every MSG frame *)
+free qid: bitstring.                  (* queueId of the version 5 invite, known to the mailbox *)
+free expT: bitstring.
+free secret_reply: bitstring [private].      (* I's first DATA after a link handshake *)
+free secret_invite_hello: bitstring [private].  (* J's first text in the invite-path HELLO *)
+free secret_invite_reply: bitstring [private].  (* I's first reply on the invite path *)
+free probe_rk0: bitstring [private].
+free probe_pq0: bitstring [private].
+const lab_probe: bitstring.
+const k_offer: bitstring.  const k_hello: bitstring.  const k_ready: bitstring.  const k_reset: bitstring.
+
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+
+fun kpk(kdk): kek.
+fun kenc(kek, nonce): kct.
+fun kss(kek, nonce): key.
+reduc forall d: kdk, r: nonce; kdec(d, kenc(kpk(d), r)) = kss(kpk(d), r).
+
+(* Link key and link frame (spec 6.4). lad = "SWL3-L" | 3 | channelId | sender33 | receiver33. *)
+fun lk(bitstring, key): key.
+fun lad(bitstring, key, key): bitstring.
+(*M:NODIR fun lad0(bitstring): bitstring. *)
+fun lseal(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; lopen(lseal(m, k, ad), k, ad) = m.
+(* binding = SHA256Tagged("upgrade", channelId | lo | hi | offerId) *)
+fun bindf(bitstring, key, key, bitstring): bitstring.
+
+(* Handshake and first messages (spec 6.1, 7), as in the draft 2 models. *)
+fun htr(key, key, key, kek, key, kct, bitstring, bitstring): bitstring.
+fun hs_rk0(bitstring, key, key, key, key): key.
+fun hs_hka(bitstring, key, key, key, key): key.
+fun hs_nhkb(bitstring, key, key, key, key): key.
+fun hs_pq0(bitstring, key, key, key, key): key.
+fun kdf_rk(key, key): key.
+fun kdf_ck(key, key): key.
+fun mkf(key): key.
+fun mcomb(key, key): key.
+fun adh_hello(key, key, kct, bitstring): bitstring.
+fun adh_data(bitstring): bitstring.
+fun adm_hello(bitstring, key, key, kct, bitstring): bitstring.
+fun adm_data(bitstring, bitstring): bitstring.
+fun henc(key, key, bitstring): bitstring.
+reduc forall x: key, k: key, ad: bitstring; hdec(henc(x, k, ad), k, ad) = x.
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+
+event JStarted(key, key, bitstring, key).
+event IAccepts(key, key, bitstring, key).
+event ISendsReply(key, key, bitstring, key).
+event JAccepts(key, key, bitstring, key).
+event SentReset(key, key, bitstring).
+event GotReset(key, key, bitstring).
+event InvJStarted(key, key, key).
+event InvIAccepts(key, key, key).
+
+(* I: one link offer (spec 6.4 step 1, then step 3). *)
+let LinkI(idskI: skey, ID_I: key, ID_J: key) =
+  new offerId: bitstring; new epk_sk: skey; new dk: kdk;
+  (*M:QUANTUM out(c, epk_sk); *)
+  let EPK = pk(epk_sk) in let EK = kpk(dk) in
+  let LK = lk(chan, dh(idskI, ID_J)) in
+  let adIJ = lad(chan, ID_I, ID_J) in let adJI = lad(chan, ID_J, ID_I) in
+  (*M:NODIR let adIJ = lad0(chan) in let adJI = lad0(chan) in *)
+  let offer = lseal((k_offer, offerId, ID_I, EPK, EK, expT), LK, adIJ) in
+  out(net, offer); out(c, offer);
+  in(net, frame: bitstring);
+  let (=k_hello, =offerId, ID_Jx: key, E: key, ct: kct, hct: bitstring, body: bitstring) = lopen(frame, LK, adJI) in
+  if ID_Jx = ID_J then
+  let bnd = bindf(chan, ID_I, ID_J, offerId) in
+  let dh1 = dh(epk_sk, ID_J) in let dh2 = dh(idskI, E) in let dh3 = dh(epk_sk, E) in
+  let ss = kdec(dk, ct) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, bnd, expT) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let xpub = hdec(hct, hka, adh_hello(ID_J, E, ct, T)) in
+  let RK1 = kdf_rk(RK0, dh(epk_sk, xpub)) in
+  let CKr1 = kdf_ck(RK0, dh(epk_sk, xpub)) in
+  let (=k_ready, =offerId) = sdec(body, mcomb(mkf(CKr1), PQ0), adm_hello(T, ID_J, E, ct, hct)) in
+  event IAccepts(ID_I, ID_J, offerId, RK0);
+  new y1: skey;
+  (*M:QUANTUM out(c, y1); *)
+  let RK2 = kdf_rk(RK1, dh(y1, xpub)) in
+  let CKs2 = kdf_ck(RK1, dh(y1, xpub)) in
+  let hct2 = henc(pk(y1), nhkb, adh_data(T)) in
+  event ISendsReply(ID_I, ID_J, T, RK2);
+  let reply = (hct2, senc((k_ready, offerId, secret_reply), mcomb(mkf(CKs2), PQ0), adm_data(T, hct2))) in
+  out(net, reply); out(c, reply).
+
+(* J: answers one offer (spec 6.4 step 2, then step 4). *)
+let LinkJ(idskJ: skey, ID_J: key, ID_I: key) =
+  in(net, frame: bitstring);
+  let LK = lk(chan, dh(idskJ, ID_I)) in
+  let adIJ = lad(chan, ID_I, ID_J) in let adJI = lad(chan, ID_J, ID_I) in
+  (*M:NODIR let adIJ = lad0(chan) in let adJI = lad0(chan) in *)
+  let (=k_offer, offerId: bitstring, ID_Ix: key, EPK: key, EK: kek, bex: bitstring) = lopen(frame, LK, adIJ) in
+  if ID_Ix = ID_I then
+  new e_sk: skey; new rsk: skey; new r: nonce;
+  (*M:QUANTUM out(c, (e_sk, rsk)); *)
+  let E = pk(e_sk) in
+  let ct = kenc(EK, r) in let ss = kss(EK, r) in
+  let bnd = bindf(chan, ID_I, ID_J, offerId) in
+  let dh1 = dh(idskJ, EPK) in let dh2 = dh(e_sk, ID_I) in let dh3 = dh(e_sk, EPK) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, bnd, bex) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let RK1 = kdf_rk(RK0, dh(rsk, EPK)) in
+  let CKs1 = kdf_ck(RK0, dh(rsk, EPK)) in
+  let hct = henc(pk(rsk), hka, adh_hello(ID_J, E, ct, T)) in
+  event JStarted(ID_I, ID_J, offerId, RK0);
+  let hello = lseal((k_hello, offerId, ID_J, E, ct, hct, senc((k_ready, offerId), mcomb(mkf(CKs1), PQ0), adm_hello(T, ID_J, E, ct, hct))), LK, adJI) in
+  out(net, hello); out(c, hello);
+  out(c, senc(probe_rk0, RK0, lab_probe));
+  out(c, senc(probe_pq0, PQ0, lab_probe));
+  in(net, (hct2: bitstring, body2: bitstring));
+  let ypub = hdec(hct2, nhkb, adh_data(T)) in
+  let RK2 = kdf_rk(RK1, dh(rsk, ypub)) in
+  let CKr2 = kdf_ck(RK1, dh(rsk, ypub)) in
+  let (=k_ready, =offerId, m: bitstring) = sdec(body2, mcomb(mkf(CKr2), PQ0), adm_data(T, hct2)) in
+  event JAccepts(ID_I, ID_J, T, RK2).
+
+(* RESET in one direction: from `me` to `them`, and its receiver. *)
+let ResetSend(sk: skey, me: key, them: key) =
+  new n: bitstring;
+  let LK = lk(chan, dh(sk, them)) in
+  let ad = lad(chan, me, them) in
+  (*M:NODIR let ad = lad0(chan) in *)
+  event SentReset(me, them, n);
+  out(net, lseal((k_reset, n), LK, ad)); out(c, lseal((k_reset, n), LK, ad)).
+let ResetRecv(sk: skey, me: key, them: key) =
+  in(net, f: bitstring);
+  let LK = lk(chan, dh(sk, them)) in
+  let ad = lad(chan, them, me) in
+  (*M:NODIR let ad = lad0(chan) in *)
+  let (=k_reset, n: bitstring) = lopen(f, LK, ad) in
+  event GotReset(them, me, n).
+
+(* One invite-path first contact with the same identity keys (spec 6.1, 6.2, version 5 binding = queueId). *)
+let InvI(idskI: skey, ID_I: key) =
+  new epk_sk: skey; new dk: kdk;
+  (*M:QUANTUM out(c, epk_sk); *)
+  let EPK = pk(epk_sk) in let EK = kpk(dk) in
+  out(oob, (ID_I, EPK, EK, expT));
+  in(net, (ID_J: key, E: key, ct: kct, hct: bitstring, body: bitstring));
+  let dh1 = dh(epk_sk, ID_J) in let dh2 = dh(idskI, E) in let dh3 = dh(epk_sk, E) in
+  let ss = kdec(dk, ct) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, qid, expT) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let xpub = hdec(hct, hka, adh_hello(ID_J, E, ct, T)) in
+  let CKr1 = kdf_ck(RK0, dh(epk_sk, xpub)) in
+  let RK1 = kdf_rk(RK0, dh(epk_sk, xpub)) in
+  let m = sdec(body, mcomb(mkf(CKr1), PQ0), adm_hello(T, ID_J, E, ct, hct)) in
+  event InvIAccepts(ID_I, ID_J, RK0);
+  new y1: skey;
+  (*M:QUANTUM out(c, y1); *)
+  let hct2 = henc(pk(y1), nhkb, adh_data(T)) in
+  let CKs2 = kdf_ck(RK1, dh(y1, xpub)) in
+  out(net, (hct2, senc(secret_invite_reply, mcomb(mkf(CKs2), PQ0), adm_data(T, hct2)))); out(c, (hct2, senc(secret_invite_reply, mcomb(mkf(CKs2), PQ0), adm_data(T, hct2)))).
+let InvJ(idskJ: skey, ID_J: key, ID_Iexp: key) =
+  in(oob, (ID_I: key, EPK: key, EK: kek, bex: bitstring));
+  if ID_I = ID_Iexp then
+  new e_sk: skey; new rsk: skey; new r: nonce;
+  (*M:QUANTUM out(c, (e_sk, rsk)); *)
+  let E = pk(e_sk) in
+  let ct = kenc(EK, r) in let ss = kss(EK, r) in
+  let dh1 = dh(idskJ, EPK) in let dh2 = dh(e_sk, ID_I) in let dh3 = dh(e_sk, EPK) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, qid, bex) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let PQ0 = hs_pq0(T, dh1, dh2, dh3, ss) in
+  let CKs1 = kdf_ck(RK0, dh(rsk, EPK)) in
+  let hct = henc(pk(rsk), hka, adh_hello(ID_J, E, ct, T)) in
+  event InvJStarted(ID_I, ID_J, RK0);
+  out(net, (ID_J, E, ct, hct, senc(secret_invite_hello, mcomb(mkf(CKs1), PQ0), adm_hello(T, ID_J, E, ct, hct))));
+  out(c, (ID_J, E, ct, hct, senc(secret_invite_hello, mcomb(mkf(CKs1), PQ0), adm_hello(T, ID_J, E, ct, hct)))).
+
+(*M:QSEC query attacker(secret_reply); attacker(probe_rk0); attacker(probe_pq0); attacker(secret_invite_hello); attacker(secret_invite_reply). *)
+(*M:QSEC query i: key, j: key, t: bitstring, k: key; event(JAccepts(i, j, t, k)). *)
+(*M:QAUTH query i: key, j: key, t: bitstring, k: key; inj-event(JAccepts(i, j, t, k)) ==> inj-event(ISendsReply(i, j, t, k)). *)
+(*M:QAUTH query i: key, j: key, o: bitstring, k: key; inj-event(IAccepts(i, j, o, k)) ==> inj-event(JStarted(i, j, o, k)). *)
+(*M:QINVAUTH query i: key, j: key, k: key; event(InvIAccepts(i, j, k)) ==> event(InvJStarted(i, j, k)). *)
+(*M:QRESET query a: key, b: key, n: bitstring; event(GotReset(a, b, n)) ==> event(SentReset(a, b, n)). *)
+
+process
+  new idskI: skey; new idskJ: skey;
+  let ID_I = pk(idskI) in let ID_J = pk(idskJ) in
+  out(c, (ID_I, ID_J));
+  (*M:QUANTUM out(c, (idskI, idskJ)); *)
+  (
+    (!LinkI(idskI, ID_I, ID_J)) | (!LinkJ(idskJ, ID_J, ID_I))
+  | (!ResetSend(idskI, ID_I, ID_J)) | (!ResetSend(idskJ, ID_J, ID_I))
+  | (!ResetRecv(idskI, ID_I, ID_J)) | (!ResetRecv(idskJ, ID_J, ID_I))
+  | InvI(idskI, ID_I) | InvJ(idskJ, ID_J, ID_I)
+  (*M:FS | (phase 1; out(c, (idskI, idskJ))) *)
+  )

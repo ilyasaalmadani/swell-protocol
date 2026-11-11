@@ -1,0 +1,45 @@
+{
+  "derive" : [
+    {
+      "entropy" : "00000000000000000000000000000000",
+      "public" : "187100163efe35ad68b4985f8813538fecb19bf9b88728cffed9db9a0296bb71",
+      "secret" : "a366a24070b11c25c6f414348a6c1084e207366d0896789309828cf281342e48",
+      "serialized" : "05187100163efe35ad68b4985f8813538fecb19bf9b88728cffed9db9a0296bb71"
+    },
+    {
+      "entropy" : "11111111111111111111111111111111",
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "secret" : "4279c03234a32752b14db353ecb6c0d0d19ff2e6b04ffef57ed492dd88b7be4e",
+      "serialized" : "059d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f"
+    },
+    {
+      "entropy" : "000102030405060708090a0b0c0d0e0f",
+      "public" : "38ca60c062bec336450b187b554d49d7d23311ab3eb8092a5bf38902d47dff0a",
+      "secret" : "7a90c4e2ae7fea2d46fe53c0afe001a824e7c7f461a3fdb3ee244dbb5100bdfd",
+      "serialized" : "0538ca60c062bec336450b187b554d49d7d23311ab3eb8092a5bf38902d47dff0a"
+    }
+  ],
+  "description" : "secret = HKDF-SHA-256(ikm = entropy16, salt = 32 zero bytes, info = ASCII 'swell identity v1', L = 32); public = X25519(secret, 9); serialized = 0x05 | public. invalidPublic keys must be refused as identity public keys.",
+  "invalidPublic" : [
+    {
+      "public" : "0000000000000000000000000000000000000000000000000000000000000000",
+      "why" : "u = 0, order 2"
+    },
+    {
+      "public" : "0100000000000000000000000000000000000000000000000000000000000000",
+      "why" : "u = 1, order 4"
+    },
+    {
+      "public" : "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "why" : "u = p, not canonical"
+    },
+    {
+      "public" : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "why" : "top bit set"
+    },
+    {
+      "public" : "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+      "why" : "order 8 point"
+    }
+  ]
+}

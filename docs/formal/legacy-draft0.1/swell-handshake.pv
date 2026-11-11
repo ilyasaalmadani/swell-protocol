@@ -1,0 +1,156 @@
+(* Swell Protocol draft 0.1: handshake (section 6) plus the first two ratchet
+   messages with header encryption (section 7). ProVerif model.
+   Variants are produced by run.sh, which uncomments lines of the form
+   (*M:NAME ... *). Without any variant the base model runs.
+   One inviter instance and one joiner instance (no replication): the full
+   replicated model did not terminate in 5 minutes, so injective agreement and
+   multi-session claims are NOT covered.
+   Status of every result is in docs/audit/SWELL-PROTOCOL-REVIEW-1.md. *)
+
+type skey.  type key.  type kdk.  type kek.  type kct.  type nonce.
+
+free c: channel.
+free inv: channel [private].   (* out-of-band invite: QR, honest delivery *)
+free qid: bitstring.           (* mailbox queue id, public *)
+const pq0: bitstring.
+free secret_hello: bitstring [private].
+free secret_m1: bitstring [private].
+free secret_m2: bitstring [private].
+
+(* X25519, abstract; zero-output and twist issues not modelled *)
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+(*M:QUANTUM reduc forall a: skey; dlog(pk(a)) = a. *)
+
+(* ML-KEM-768 as an IND-CCA KEM, implicit rejection modelled as "process stops" *)
+fun kpk(kdk): kek.
+fun kenc(kek, nonce): kct.
+fun kss(kek, nonce): key.
+reduc forall d: kdk, r: nonce; kdec(d, kenc(kpk(d), r)) = kss(kpk(d), r).
+
+(* hash / HKDF, each label a separate free function (random oracle, domain separated) *)
+fun bhash(key, key, kek): key.
+fun thash(key, key, key, kek, key, kct, bitstring): bitstring.
+fun hs_rk(bitstring, key, key, key, key): key.
+fun hs_hkj(bitstring, key, key, key, key): key.
+fun hs_nhki(bitstring, key, key, key, key): key.
+fun hs_hello(bitstring, key, key, key, key): key.
+fun root_rk(key, key): key.
+fun root_ck(key, key): key.
+fun root_nhk(key, key): key.
+fun mkf(key): key.
+fun adrel(key, key): bitstring.
+
+(* AES-GCM as perfect AEAD (so no key-commitment or nonce-reuse issues are modelled) *)
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+
+event IOffered(key, key).
+event IAccepts(key, key).        (* idJ as received, rk0 *)
+event JStarted(key, key).        (* honest idJ, rk0 *)
+event IGotM1(key, key).          (* idJ as received, rk1 *)
+event JSendsM1(key, key).
+event ISendsM2(key, key, key).   (* idI, idJ, rk2 *)
+event JAccepts(key, key, key).
+
+let Inviter(idsk_I: skey) =
+  new epk_sk: skey; new dk: kdk; new sealKey: key;
+  let idI = pk(idsk_I) in let EPK = pk(epk_sk) in let EK = kpk(dk) in
+  let bh = bhash(idI, EPK, EK) in
+  event IOffered(idI, EPK);
+  out(inv, (sealKey, bh));
+  out(c, senc((idI, EPK, EK), sealKey, qid));       (* sealed bundle in queue: mailbox sees it *)
+  (*M:LEAK_INVITE out(c, (sealKey, bh)); *)
+  (*M:LEAK_DK out(c, dk); *)
+  (*M:LEAK_ALLDH out(c, epk_sk); *)
+  in(c, (idJ: key, E: key, ct: kct, body: bitstring));
+  let dh1 = dh(epk_sk, idJ) in
+  let dh2 = dh(idsk_I, E) in
+  let dh3 = dh(epk_sk, E) in
+  let ssk = kdec(dk, ct) in
+  let th = thash(idI, idJ, EPK, EK, E, ct, qid) in
+  let hh = hs_hello(th, dh1, dh2, dh3, ssk) in
+  let nm = sdec(body, hh, th) in
+  let rk0 = hs_rk(th, dh1, dh2, dh3, ssk) in
+  let hkj = hs_hkj(th, dh1, dh2, dh3, ssk) in
+  let nhki = hs_nhki(th, dh1, dh2, dh3, ssk) in
+  event IAccepts(idJ, rk0);
+  (* spec 6.3: dk deleted here; epk_sk lives on as I's first ratchet key *)
+  in(c, (hct: bitstring, mbody: bitstring));
+  let (xpub: key, pqf: bitstring) = sdec(hct, hkj, adrel(idI, idJ)) in
+  let dhv = dh(epk_sk, xpub) in
+  let rk1 = root_rk(rk0, dhv) in
+  let ck1 = root_ck(rk0, dhv) in
+  let m1 = sdec(mbody, mkf(ck1), hct) in
+  event IGotM1(idJ, rk1);
+  new y: skey;
+  let dhv2 = dh(y, xpub) in
+  let rk2 = root_rk(rk1, dhv2) in
+  let ck2 = root_ck(rk1, dhv2) in
+  let nhk2 = root_nhk(rk1, dhv2) in
+  let hct2 = senc((pk(y), pq0), nhki, adrel(idI, idJ)) in
+  let body2 = senc(secret_m2, mkf(ck2), hct2) in
+  event ISendsM2(idI, idJ, rk2);
+  out(c, (hct2, body2));
+  (*M:FS phase 1; out(c, (y, rk2, nhk2, sealKey)); *)
+  0.
+
+let Joiner(idsk_J: skey) =
+  in(inv, (sealKey: key, bh: key));
+  in(c, sealed: bitstring);
+  let (idI: key, EPK: key, EK: kek) = sdec(sealed, sealKey, qid) in
+  if bhash(idI, EPK, EK) = bh then
+  new e_sk: skey; new r: nonce;
+  (*M:LEAK_ALLDH out(c, e_sk); *)
+  let E = pk(e_sk) in
+  let ct = kenc(EK, r) in
+  let ssk = kss(EK, r) in
+  let idJ = pk(idsk_J) in
+  let dh1 = dh(idsk_J, EPK) in
+  let dh2 = dh(e_sk, idI) in
+  let dh3 = dh(e_sk, EPK) in
+  let th = thash(idI, idJ, EPK, EK, E, ct, qid) in
+  let hh = hs_hello(th, dh1, dh2, dh3, ssk) in
+  let rk0 = hs_rk(th, dh1, dh2, dh3, ssk) in
+  let hkj = hs_hkj(th, dh1, dh2, dh3, ssk) in
+  let nhki = hs_nhki(th, dh1, dh2, dh3, ssk) in
+  event JStarted(idJ, rk0);
+  out(c, (idJ, E, ct, senc(secret_hello, hh, th)));
+  new x1: skey;
+  (*M:LEAK_ALLDH out(c, x1); *)
+  let dhv = dh(x1, EPK) in
+  let rk1 = root_rk(rk0, dhv) in
+  let ck1 = root_ck(rk0, dhv) in
+  let hct = senc((pk(x1), pq0), hkj, adrel(idI, idJ)) in
+  let mbody = senc(secret_m1, mkf(ck1), hct) in
+  event JSendsM1(idJ, rk1);
+  out(c, (hct, mbody));
+  in(c, (hct2: bitstring, body2: bitstring));
+  let (ypub: key, f2: bitstring) = sdec(hct2, nhki, adrel(idI, idJ)) in
+  let dhv2 = dh(x1, ypub) in
+  let rk2 = root_rk(rk1, dhv2) in
+  let ck2 = root_ck(rk1, dhv2) in
+  let m2 = sdec(body2, mkf(ck2), hct2) in
+  event JAccepts(idI, idJ, rk2);
+  (*M:FS phase 1; out(c, (x1, rk2, sealKey)); *)
+  0.
+
+query attacker(secret_hello).
+query attacker(secret_m1).
+query attacker(secret_m2).
+(* J authenticates I, with key confirmation after I's first reply *)
+query i: key, j: key, k: key; event(JAccepts(i, j, k)) ==> event(ISendsM2(i, j, k)).
+(* I authenticates J (agreement on the session key rk1), TOFU *)
+query j: key, k: key; event(IGotM1(j, k)) ==> event(JSendsM1(j, k)).
+query j: key, k: key; event(IAccepts(j, k)) ==> event(JStarted(j, k)).
+(* sanity: the honest run must be reachable, otherwise the above is vacuous *)
+query i: key, j: key, k: key; event(JAccepts(i, j, k)).
+query j: key, k: key; event(IGotM1(j, k)).
+
+process
+  new idsk_I: skey; new idsk_J: skey;
+  (*M:LEAK_IDI out(c, idsk_I); *)
+  (*M:LEAK_IDJ out(c, idsk_J); *)
+  (*M:QUANTUM out(c, idsk_I); out(c, idsk_J); *)
+  ( Inviter(idsk_I) | Joiner(idsk_J) (*M:FS | (phase 1; out(c, (idsk_I, idsk_J))) *) )

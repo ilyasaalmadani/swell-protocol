@@ -1,0 +1,98 @@
+{
+  "description" : "SwellSig (spec 5.2). edwardsMap: X25519 public -> Edwards key A (y, sign bit 0). sign: deterministic, the signature must match byte for byte and verify. negative: each must fail verification of (public, context swell-group-state-v1, message 78) . strict: hostile signatures on which RFC 8032 verifiers can differ; every one must fail SwellSig verification (spec 5.2 strict rules), whatever the two equations say. plainEquation and cofactoredEquation say whether [S]B = R + [k]A and [8][S]B = [8]R + [8][k]A hold, with k = SHA-512(R | A | msg) mod L, computed by the generator; they explain each case and are not checked.",
+  "edwardsMap" : [
+    {
+      "edwards" : "d91e469c00257d03c863de70a97a3db9de60e7569cfbe1f8c9b43efcb57b184f",
+      "x25519" : "187100163efe35ad68b4985f8813538fecb19bf9b88728cffed9db9a0296bb71"
+    },
+    {
+      "edwards" : "ac28a347651ba0461f3933a3070135823fee690aeed8279f789cfdd6f01e064a",
+      "x25519" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f"
+    },
+    {
+      "edwards" : "a6f7137553af0b18789fe1c4dea89a8420851761855ac34b253947f06188d905",
+      "x25519" : "38ca60c062bec336450b187b554d49d7d23311ab3eb8092a5bf38902d47dff0a"
+    }
+  ],
+  "negative" : [
+    {
+      "signature" : "ee5582c23660736619f7081202b1ffcaf1ef2a3dc9c8492bed3a25920d0765ba04f25cdb477338eefff54dd930472b76c1b2843a71effaca337b20191c9bed0a",
+      "why" : "bit flipped in R"
+    },
+    {
+      "signature" : "ef5582c23660736619f7081202b1ffcaf1ef2a3dc9c8492bed3a25920d0765ba04f25cdb477338eefef54dd930472b76c1b2843a71effaca337b20191c9bed0a",
+      "why" : "bit flipped in S"
+    },
+    {
+      "signature" : "ef5582c23660736619f7081202b1ffcaf1ef2a3dc9c8492bed3a25920d0765baf1c5523862d64a46d692457c0f410a8bc1b2843a71effaca337b20191c9bed1a",
+      "why" : "S + L, not canonical"
+    },
+    {
+      "signature" : "ef5582c23660736619f7081202b1ffcaf1ef2a3dc9c8492bed3a25920d0765ba04f25cdb477338eefff54dd930472b76c1b2843a71effaca337b20191c9bed",
+      "why" : "63 bytes"
+    }
+  ],
+  "negativeMessage" : "78",
+  "negativePublic" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+  "sign" : [
+    {
+      "context" : "swell-group-state-v1",
+      "message" : "",
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "secret" : "4279c03234a32752b14db353ecb6c0d0d19ff2e6b04ffef57ed492dd88b7be4e",
+      "signature" : "059cb362716382bca7aaa273f7bfa5167ee2635e280255c55a0003d6490921f0bf5c3e1618b805188171ae9d26e1d6686f1175baab3acbac910cba55dffc6f00"
+    },
+    {
+      "context" : "swell-group-state-v1",
+      "message" : "67726f7570207374617465206279746573",
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "secret" : "4279c03234a32752b14db353ecb6c0d0d19ff2e6b04ffef57ed492dd88b7be4e",
+      "signature" : "19bd11c93ae3d9cc0a7f2fed576017617b7246f7d330aea57b6b7ff5cdf94d39fd5f664b20fab69a2991cc245c922a4efa9c44d4c77309b59c1dbac78bdae407"
+    },
+    {
+      "context" : "test",
+      "message" : "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "secret" : "4279c03234a32752b14db353ecb6c0d0d19ff2e6b04ffef57ed492dd88b7be4e",
+      "signature" : "0df1455d2bf1d513356b2567c0068235f8d38c6fd4feacbfdb7b11c2f0cf2dac7aa587a5f178c81f7b9517885660c637891c53cb65d692972a3d575ff8cab908"
+    }
+  ],
+  "strict" : [
+    {
+      "cofactoredEquation" : true,
+      "context" : "swell-group-state-v1",
+      "message" : "78",
+      "plainEquation" : false,
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "signature" : "37c2f425b2b5a610a927d9055f2cbaa3a3734a3bf7f0eed094d71a74e1faab4edc450fa592ef7f4e4553eda982c6dde51b31490b54fa2e2ff2648ff7c6a9bc0c",
+      "why" : "R + a point of order 8 (cofactored equation holds)"
+    },
+    {
+      "cofactoredEquation" : true,
+      "context" : "swell-group-state-v1",
+      "message" : "78",
+      "plainEquation" : true,
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "signature" : "0100000000000000000000000000000000000000000000000000000000000000d050822bbbea35088c9371e57380c7f74dbfa9cb8eaf2871a3cd34d4958e2b06",
+      "why" : "R is the identity, S = k a (both equations hold)"
+    },
+    {
+      "cofactoredEquation" : true,
+      "context" : "swell-group-state-v1",
+      "message" : "78",
+      "plainEquation" : true,
+      "public" : "9d6d8cb61d10d2d8265b7364fd0811d3fd89daa0c91451e96692e0ce71f7b06f",
+      "signature" : "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f50e8d98141e7e5cdc897db30eaadaaf1905cbad478f6ad7e370c547de29d2c05",
+      "why" : "R not canonical (y = p + 1), S = k a"
+    },
+    {
+      "cofactoredEquation" : true,
+      "context" : "swell-group-state-v1",
+      "message" : "686f7374696c65207374617465205d000000",
+      "plainEquation" : true,
+      "public" : "40cb8ac8e8e89d1f98db7849c0708a962773226cbe10fe98820a15a819f54454",
+      "signature" : "2e7685623c8456702f1c0c6907108fb2746f75b923827f73753b3c65e24bf3fe4631272c89bee7127b42d132d38e826f1de67e8f69eea58038be800dcfaadb0e",
+      "why" : "A has a point of order 8 in it, k = 0 mod 8 (both equations hold)"
+    }
+  ]
+}

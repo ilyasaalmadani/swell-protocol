@@ -1,0 +1,62 @@
+(* Swell Protocol draft 0.1, section 11.1: RESUME envelope (kind 3).
+   resume_key = HKDF(DH(id_sk_A, ID_B), info = "resume" || lo || hi): the same
+   key in both directions. This model asks whether A can be made to accept, as
+   a RESUME from B, a message that B never sent (reflection of A's own RESUME),
+   and whether B can be made to accept a RESUME that A never sent.
+   DIRECTIONAL adds the sender identity to the key derivation and the AD (the
+   proposed fix). LEAK_SKB gives the attacker B's static private key (key
+   compromise impersonation of A towards B).
+   Not modelled: resume_ctr and replay of a RESUME to B (a counter or seen
+   table needs the state that a backup restore loses; see review finding). *)
+
+type skey.  type key.
+
+free c: channel.
+free qid: bitstring.
+
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+
+fun rkey(key, key, key): key.          (* rkey(dh, a, b) *)
+equation forall d: key, a: key, b: key; rkey(d, a, b) = rkey(d, b, a).   (* info = lo||hi: order-free *)
+
+
+fun rkeyd(key, key, key, key): key.
+equation forall d: key, s: key, a: key, b: key; rkeyd(d, s, a, b) = rkeyd(d, s, b, a).
+
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+
+event ASent(key, bitstring).      (* sender id, bundle *)
+event AcceptedFrom(key, key, bitstring).   (* receiver id, claimed sender id, bundle *)
+
+(* A resume sender: id_sk_me, peer public key *)
+let Sender(skme: skey, pkpeer: key) =
+  new bundle: bitstring;
+  let me = pk(skme) in
+  let d = dh(skme, pkpeer) in
+  (*M:SYM let k = rkey(d, me, pkpeer) in *)
+  (*M:DIRECTIONAL let k = rkeyd(d, me, me, pkpeer) in *)
+  event ASent(me, bundle);
+  out(c, senc(bundle, k, qid)).
+
+(* A resume receiver: id_sk_me, peer public key *)
+let Receiver(skme: skey, pkpeer: key) =
+  in(c, m: bitstring);
+  let me = pk(skme) in
+  let d = dh(skme, pkpeer) in
+  (*M:SYM let k = rkey(d, me, pkpeer) in *)
+  (*M:DIRECTIONAL let k = rkeyd(d, pkpeer, me, pkpeer) in *)
+  let bundle = sdec(m, k, qid) in
+  event AcceptedFrom(me, pkpeer, bundle).
+
+query r: key, s: key, b: bitstring; event(AcceptedFrom(r, s, b)) ==> event(ASent(s, b)).
+query r: key, s: key, b: bitstring; event(AcceptedFrom(r, s, b)).
+
+process
+  new ska: skey; new skb: skey;
+  out(c, pk(ska)); out(c, pk(skb));
+  (*M:LEAK_SKB out(c, skb); *)
+  ( !Sender(ska, pk(skb)) | !Sender(skb, pk(ska))
+  | !Receiver(ska, pk(skb)) | !Receiver(skb, pk(ska)) )

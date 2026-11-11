@@ -1,0 +1,117 @@
+(* Swell Protocol draft 0.1, section 7.6: one KEM epoch, owner = I.
+   Question asked: after a theft of I's ratchet state (root key, current
+   ratchet key, header key), is a LATER message secret against an attacker who
+   (a) only watches the network, and (b) in the QUANTUM variant can also break
+   X25519 (discrete log is available)?
+   The network is PASSIVE here by construction: Relay copies each message to
+   the attacker and delivers the original over a private channel. Against an
+   active attacker who holds the stolen state, post-compromise security cannot
+   hold, so that case is NOT asked (the spec says the same in 3.2).
+   NOMIX removes the epoch mix: a control. Under QUANTUM the attack must then
+   be found, otherwise the model proves nothing.
+   Not modelled: epoch numbering, retry, lost messages (see review finding). *)
+
+type skey.  type key.  type kdk.  type kek.  type kct.  type nonce.
+
+free c: channel.
+free a1: channel [private].  free a2: channel [private].  free a3: channel [private].
+free r1: channel [private].  free r2: channel [private].  free r3: channel [private].
+const pq0: bitstring.
+const pq1: bitstring.
+const tagEK: bitstring.
+const tagCT: bitstring.
+const ad0: bitstring.
+free secret_c: bitstring [private].
+
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+(*M:QUANTUM reduc forall a: skey; dlog(pk(a)) = a. *)
+
+fun kpk(kdk): kek.
+fun kenc(kek, nonce): kct.
+fun kss(kek, nonce): key.
+reduc forall d: kdk, r: nonce; kdec(d, kenc(kpk(d), r)) = kss(kpk(d), r).
+
+fun root_rk(key, key): key.
+fun root_ck(key, key): key.
+fun root_nhk(key, key): key.
+fun mkf(key): key.
+fun mixf(key, key): key.
+(*M:NOMIX equation forall a: key, b: key; mixf(a, b) = a. *)
+
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+
+event JGotC(key).
+event IMixes(key).
+
+let Relay(src: channel, dst: channel) =
+  in(src, m: bitstring); out(c, m); out(dst, m).
+
+let OwnerI(rk: key, y0: skey, xpub0: key, hk0: key) =
+  new dk: kdk;
+  new y1: skey;
+  let dhA = dh(y1, xpub0) in
+  let rkA = root_rk(rk, dhA) in
+  let ckA = root_ck(rk, dhA) in
+  let nhkA = root_nhk(rk, dhA) in
+  let hctA = senc((pk(y1), pq0), hk0, ad0) in
+  let bodyA = senc((tagEK, kpk(dk)), mkf(ckA), hctA) in
+  out(r1, (hctA, bodyA));
+  in(a2, (hctB: bitstring, bodyB: bitstring));
+  let (xpub1: key, fB: bitstring) = sdec(hctB, nhkA, ad0) in
+  let dhB = dh(y1, xpub1) in
+  let rkB = root_rk(rkA, dhB) in
+  let ckB = root_ck(rkA, dhB) in
+  let nhkB = root_nhk(rkA, dhB) in
+  let (tg: bitstring, ct: kct) = sdec(bodyB, mkf(ckB), hctB) in
+  let ss = kdec(dk, ct) in
+  new y2: skey;
+  let rkM = mixf(rkB, ss) in
+  let dhC = dh(y2, xpub1) in
+  let rkC = root_rk(rkM, dhC) in
+  let ckC = root_ck(rkM, dhC) in
+  let hctC = senc((pk(y2), pq1), nhkB, ad0) in
+  let bodyC = senc(secret_c, mkf(ckC), hctC) in
+  event IMixes(rkC);
+  out(r3, (hctC, bodyC)).
+
+let PeerJ(x0: skey, ypub0: key, rk: key, hk0: key) =
+  in(a1, (hctA: bitstring, bodyA: bitstring));
+  let (y1pub: key, fA: bitstring) = sdec(hctA, hk0, ad0) in
+  let dhA = dh(x0, y1pub) in
+  let rkA = root_rk(rk, dhA) in
+  let ckA = root_ck(rk, dhA) in
+  let nhkA = root_nhk(rk, dhA) in
+  let (tg: bitstring, ek: kek) = sdec(bodyA, mkf(ckA), hctA) in
+  new r: nonce;
+  let ct = kenc(ek, r) in
+  let ss = kss(ek, r) in
+  new x1: skey;
+  let dhB = dh(x1, y1pub) in
+  let rkB = root_rk(rkA, dhB) in
+  let ckB = root_ck(rkA, dhB) in
+  let nhkB = root_nhk(rkA, dhB) in
+  let hctB = senc((pk(x1), pq0), nhkA, ad0) in
+  let bodyB = senc((tagCT, ct), mkf(ckB), hctB) in
+  out(r2, (hctB, bodyB));
+  in(a3, (hctC: bitstring, bodyC: bitstring));
+  let (y2pub: key, fC: bitstring) = sdec(hctC, nhkB, ad0) in
+  let rkM = mixf(rkB, ss) in
+  let dhC = dh(x1, y2pub) in
+  let rkC = root_rk(rkM, dhC) in
+  let ckC = root_ck(rkM, dhC) in
+  let mc = sdec(bodyC, mkf(ckC), hctC) in
+  event JGotC(rkC).
+
+query attacker(secret_c).
+(* sanity: honest run completes and both sides derive the same key *)
+query k: key; event(JGotC(k)).
+query k: key; event(JGotC(k)) ==> event(IMixes(k)).
+
+process
+  new rk: key; new y0: skey; new x0: skey; new hk0: key;
+  out(c, (rk, y0, hk0, pk(x0)));          (* theft of I's state *)
+  ( OwnerI(rk, y0, pk(x0), hk0) | PeerJ(x0, pk(y0), rk, hk0)
+  | Relay(r1, a1) | Relay(r2, a2) | Relay(r3, a3) )

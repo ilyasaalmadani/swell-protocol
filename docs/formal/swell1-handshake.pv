@@ -1,0 +1,209 @@
+(* Swell Protocol DRAFT 1 (docs/SWELL-PROTOCOL-SPEC.md, 2026-11-04):
+   invite (section 5), handshake (6), HELLO as ratchet message 0 and I's first
+   reply (7.1 to 7.5, 8.3). ProVerif 2.05 model.
+
+   run.sh builds variants by uncommenting lines of the form (*M:NAME ... *).
+
+   What is abstracted (read before trusting a result):
+   - One invite, one inviter session, one joiner session. Injectivity is
+     therefore only checked inside that single session.
+   - Perfect primitives: X25519 as an abstract DH group (no low-order points,
+     no all-zero check needed), ML-KEM as an ideal KEM (implicit rejection is
+     "the process stops"), HKDF / SHA-256 as distinct random oracles, AES-GCM
+     as perfect authenticated encryption (no nonce reuse, no key commitment
+     issues). The derived header nonce (D6) and padding are not modelled.
+   - Times (expiresAtMs, +10 min) are a public constant; expiry is not modelled.
+   - pn and n are 0 in both messages, so they are not modelled.
+   - Mailbox ACK/PEEK, approval, outbox and crash rules are not modelled.
+   - queueId is public: the mailbox operator knows it.
+
+   Two private names stand for the honest identity keys so that the model can
+   speak about "the real I" and "the real J". The safety number is the pair
+   (ID_I, ID_J); comparing it means checking that each side saw these keys.
+   PUBINV lets the attacker replace the whole invite (no out-of-band
+   protection). SNMATCH keeps only the runs where the safety numbers match
+   (each side saw the real other identity key); in a one-session model that is
+   the same as asking "if the numbers match, do the properties hold?". *)
+
+type skey.  type key.  type kdk.  type kek.  type kct.  type nonce.
+
+free c: channel.
+free inv: channel [private].        (* out-of-band invite (QR / link) *)
+(*M:PUBINV free invpub: channel. *)
+free qid: bitstring.                (* queueId, known to the mailbox *)
+free expT: bitstring.               (* expiresAtMs *)
+free idskI: skey [private].         (* honest I identity key, this relationship *)
+free idskJ: skey [private].         (* honest J identity key, this relationship *)
+free secret_hello: bitstring [private].   (* J's inner HELLO / first text *)
+free secret_reply: bitstring [private].   (* I's first reply *)
+free probe_rk0: bitstring [private].      (* secrecy probe for RK0 *)
+const lab_probe: bitstring.
+const cut_a: bitstring.   const cut_b: bitstring.   (* distinct: "if cut_a = cut_b" stops a process *)
+
+(* X25519, abstract *)
+fun pk(skey): key.
+fun dh(skey, key): key.
+equation forall a: skey, b: skey; dh(a, pk(b)) = dh(b, pk(a)).
+(* Quantum attacker: every honest X25519 private key is handed to the attacker
+   as soon as it is made (discrete log on every honest public key; keys the
+   attacker makes itself it knows anyway). This is an ACTIVE quantum attacker
+   from the start, stronger than "harvest now, decrypt later". A version with
+   a dlog destructor did not finish in 600 s.
+   EK stays unknown: it sits only in the bundle, sealed under sealKey with
+   AES-256, which a quantum computer does not break. QBUNDLE also gives the
+   attacker EK, as if it had seen the invite. *)
+
+(* ML-KEM-768 as an ideal KEM *)
+fun kpk(kdk): kek.
+fun kenc(kek, nonce): kct.
+fun kss(kek, nonce): key.
+reduc forall d: kdk, r: nonce; kdec(d, kenc(kpk(d), r)) = kss(kpk(d), r).
+
+(* Tagged hashes and HKDF outputs, one free function per label (section 9) *)
+fun hbundle(key, key, kek, bitstring): bitstring.                    (* bundleCommit *)
+fun htr(key, key, key, kek, key, kct, bitstring, bitstring): bitstring. (* T *)
+fun hs_rk0(bitstring, key, key, key, key): key.                      (* hs[0..32]  *)
+fun hs_hka(bitstring, key, key, key, key): key.                      (* hs[32..64] *)
+fun hs_nhkb(bitstring, key, key, key, key): key.                     (* hs[64..96] *)
+fun kdf_rk(key, key): key.          (* KDF_RK -> RK' *)
+fun kdf_ck(key, key): key.          (* KDF_RK -> CK  *)
+fun kdf_nhk(key, key): key.         (* KDF_RK -> NHK *)
+fun mkf(key): key.                  (* KDF_CK message key, n = 0 *)
+
+(* Associated data, as free constructors (exact bytes not modelled) *)
+fun adh_hello(key, key, kct, bitstring): bitstring.  (* "SWL1-H"|1|ID_J|E|ct|T *)
+fun adh_data(bitstring): bitstring.                  (* "SWL1-H"|2|T *)
+fun adm_hello(bitstring, key, key, kct, bitstring): bitstring. (* "SWL1-M"|T|prefix|hct *)
+fun adm_data(bitstring, bitstring): bitstring.
+
+(* AEAD. Header AEAD carries a key (dh_pub), body AEAD carries a bitstring. *)
+fun henc(key, key, bitstring): bitstring.
+reduc forall x: key, k: key, ad: bitstring; hdec(henc(x, k, ad), k, ad) = x.
+fun senc(bitstring, key, bitstring): bitstring.
+reduc forall m: bitstring, k: key, ad: bitstring; sdec(senc(m, k, ad), k, ad) = m.
+fun bseal(key, key, kek, bitstring, key, bitstring): bitstring.     (* bundle envelope *)
+reduc forall a: key, b: key, e: kek, x: bitstring, k: key, ad: bitstring;
+  bopen(bseal(a, b, e, x, k, ad), k, ad) = (a, b, e, x).
+
+event JStarted(key, key, key).                (* ID_I seen, ID_J, RK0 (RK0 binds T) *)
+event IAccepts(key, key, key).                (* ID_I, ID_J seen, RK0; after the HELLO header opened *)
+event ISendsReply(key, key, bitstring, key).  (* ID_I, ID_J seen, T, RK2 *)
+event JAccepts(key, key, bitstring, key).     (* ID_I seen, ID_J, T, RK2 *)
+
+let Inviter =
+  new epk_sk: skey; new dk: kdk; new sealKey: key;
+  let ID_I = pk(idskI) in let EPK = pk(epk_sk) in let EK = kpk(dk) in
+  let commit = hbundle(ID_I, EPK, EK, expT) in
+  out(c, bseal(ID_I, EPK, EK, expT, sealKey, qid));    (* first PUT, mailbox sees it *)
+  out(inv, (qid, sealKey, commit, expT));              (* invite to J, out of band *)
+  (*M:PUBINV out(invpub, (qid, sealKey, commit, expT)); *)
+  (*M:LEAK_INVITE out(c, (sealKey, commit)); *)
+  (*M:LEAK_DK out(c, dk); *)
+  (*M:QUANTUM out(c, (epk_sk, idskI)); *)
+  (*M:QBUNDLE out(c, EK); *)
+  (*M:LEAK_IDI out(c, idskI); *)
+  (* 6.2: I reads a HELLO *)
+  in(c, (ID_J: key, E: key, ct: kct, hct: bitstring, body: bitstring));
+  (* SNMATCH: the safety numbers will match, i.e. I saw the real ID_J *)
+  (*M:SNMATCH if ID_J = pk(idskJ) then *)
+  let dh1 = dh(epk_sk, ID_J) in
+  let dh2 = dh(idskI, E) in
+  let dh3 = dh(epk_sk, E) in
+  let ss = kdec(dk, ct) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, qid, expT) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  (* Bob role: NHKr = shared_hka; header opens under NHKr -> DH ratchet step *)
+  let xpub = hdec(hct, hka, adh_hello(ID_J, E, ct, T)) in
+  (* key confirmation for I: the HELLO header, an AEAD under shared_hka with
+     T in its AD, opened. (Placing the event after the body opens as well
+     made ProVerif run out of time; the body key adds a DH on an
+     attacker-chosen ratchet key, which is covered by the secrecy queries.) *)
+  event IAccepts(ID_I, ID_J, RK0);
+  (*M:IAUTH if cut_a = cut_b then *)
+  let RK1 = kdf_rk(RK0, dh(epk_sk, xpub)) in
+  let CKr1 = kdf_ck(RK0, dh(epk_sk, xpub)) in
+  let hello = sdec(body, mkf(CKr1), adm_hello(T, ID_J, E, ct, hct)) in
+  (* new DHs, sending chain; HKs = old NHKs = shared_nhkb *)
+  new y1: skey;
+  (*M:QUANTUM out(c, y1); *)
+  let RK2 = kdf_rk(RK1, dh(y1, xpub)) in
+  let CKs2 = kdf_ck(RK1, dh(y1, xpub)) in
+  let hct2 = henc(pk(y1), nhkb, adh_data(T)) in
+  (* the reply text is the real secret only when J's key is the real one,
+     which is what comparing safety numbers checks *)
+  let txt = secret_reply in
+  event ISendsReply(ID_I, ID_J, T, RK2);
+  out(c, (hct2, senc(txt, mkf(CKs2), adm_data(T, hct2))));
+  (*M:FS phase 1; out(c, (RK2, y1, kdf_nhk(RK1, dh(y1, xpub)), idskI, dk)); *)
+  0.
+
+let Joiner =
+  in(inv, (q: bitstring, sealKey: key, commit: bitstring, ex: bitstring));
+  (*M:PUBINV in(invpub, (q2: bitstring, sealKey2: key, commit2: bitstring, ex2: bitstring)); *)
+  in(c, env: bitstring);
+  (* PUBINV: J uses the invite that came over the attacker's channel instead *)
+  let (q1: bitstring, sk1: key, cm1: bitstring, ex1: bitstring) = (q, sealKey, commit, ex) in
+  (*M:PUBINV let (q1: bitstring, sk1: key, cm1: bitstring, ex1: bitstring) = (q2, sealKey2, commit2, ex2) in *)
+  let (ID_I: key, EPK: key, EK: kek, bex: bitstring) = bopen(env, sk1, q1) in
+  if hbundle(ID_I, EPK, EK, bex) = cm1 then
+  if bex = ex1 then
+  (* SNMATCH: the safety numbers will match, i.e. J saw the real ID_I *)
+  (*M:SNMATCH if ID_I = pk(idskI) then *)
+  new e_sk: skey; new rsk: skey; new r: nonce;
+  (*M:QUANTUM out(c, (e_sk, rsk, idskJ)); *)
+  let ID_J = pk(idskJ) in let E = pk(e_sk) in
+  let ct = kenc(EK, r) in let ss = kss(EK, r) in
+  let dh1 = dh(idskJ, EPK) in
+  let dh2 = dh(e_sk, ID_I) in
+  let dh3 = dh(e_sk, EPK) in
+  let T = htr(ID_I, ID_J, EPK, EK, E, ct, q1, bex) in
+  let RK0 = hs_rk0(T, dh1, dh2, dh3, ss) in
+  let hka = hs_hka(T, dh1, dh2, dh3, ss) in
+  let nhkb = hs_nhkb(T, dh1, dh2, dh3, ss) in
+  (* Alice role: RK, CKs = KDF_RK(RK0, DH(ratchet_sk, EPK)); HKs = shared_hka *)
+  let RK1 = kdf_rk(RK0, dh(rsk, EPK)) in
+  let CKs1 = kdf_ck(RK0, dh(rsk, EPK)) in
+  let hct = henc(pk(rsk), hka, adh_hello(ID_J, E, ct, T)) in
+  let txt = secret_hello in
+  event JStarted(ID_I, ID_J, RK0);
+  out(c, (ID_J, E, ct, hct, senc(txt, mkf(CKs1), adm_hello(T, ID_J, E, ct, hct))));
+  let probe = probe_rk0 in
+  out(c, senc(probe, RK0, lab_probe));
+  (*M:IAUTH if cut_a = cut_b then *)
+  (* HELLO_SENT: wait for I's first reply, header under NHKr = shared_nhkb *)
+  in(c, (hct2: bitstring, body2: bitstring));
+  let ypub = hdec(hct2, nhkb, adh_data(T)) in
+  let RK2 = kdf_rk(RK1, dh(rsk, ypub)) in
+  let CKr2 = kdf_ck(RK1, dh(rsk, ypub)) in
+  let reply = sdec(body2, mkf(CKr2), adm_data(T, hct2)) in
+  event JAccepts(ID_I, ID_J, T, RK2);
+  (*M:FS phase 1; out(c, (RK2, rsk, idskJ)); *)
+  0.
+
+(* Queries are grouped; run.sh switches groups on per variant (markers Q...).
+   Each query sits on one line so the marker tool can uncomment it.
+   IAUTH: both processes stop right after I's accept event and J's HELLO.
+   This is sound for the I-side queries only: in one session, nothing I
+   sends after accepting can cause the acceptance, and J sends nothing
+   after the HELLO and the probe. Without the cut ProVerif ran out of time. *)
+
+(* QSEC: secrecy of J's first text, I's first reply, and the handshake key RK0 *)
+(*M:QSEC query attacker(secret_hello); attacker(secret_reply); attacker(probe_rk0). *)
+(* QSEC sanity: J can reach ACTIVE (expected "is false", i.e. reachable) *)
+(*M:QSEC query i: key, j: key, t: bitstring, k: key; event(JAccepts(i, j, t, k)). *)
+
+(* QJAUTH: J authenticates I with key confirmation. J goes ACTIVE only on
+   keys (RK2) and a transcript T that I derived in a reply to this J. *)
+(*M:QJAUTH query i: key, j: key, t: bitstring, k: key; inj-event(JAccepts(i, j, t, k)) ==> inj-event(ISendsReply(i, j, t, k)). *)
+
+(* QIAUTH: I authenticates J as "the holder of the invite", with key
+   confirmation on RK0 (which binds T). Needs IAUTH. *)
+(*M:QIAUTH query i: key, j: key, k: key; inj-event(IAccepts(i, j, k)) ==> inj-event(JStarted(i, j, k)). *)
+(*M:QIAUTH query i: key, j: key, k: key; event(IAccepts(i, j, k)). *)
+
+process
+  out(c, pk(idskI));      (* public keys are public; conservative *)
+  out(c, pk(idskJ));
+  ( Inviter | Joiner )

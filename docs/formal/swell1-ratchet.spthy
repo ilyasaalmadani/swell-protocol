@@ -1,0 +1,260 @@
+theory Swell1Ratchet
+begin
+
+/*
+  Swell Protocol DRAFT 1 (docs/SWELL-PROTOCOL-SPEC.md), sections 7 and 8:
+  the DH ratchet after the handshake, bounded to 4 messages (4 DH steps), written out step by step.
+  Tamarin 1.12.
+
+  Step s is sent by J for odd s and by I for even s, so every message starts
+  a new DH step, as in a strict ping-pong conversation. Index s is "the root
+  key RK_s the party currently holds":
+
+    a_0 = epk_sk (I), A_0 = EPK                 RK_0 = handshake output
+    J  : a_1 = ratchet_sk, RK_1 = KDF_RK(RK_0, DH(a_1, A_0)), sends m_1
+    I  : receives m_1 (RK_1 from DH(a_0, A_1)), at once makes a_2 and
+         RK_2 = KDF_RK(RK_1, DH(a_2, A_1)) as section 8.3 says, sends m_2
+    J  : receives m_2, makes a_3, sends m_3; I receives m_3, makes a_4,
+         sends m_4; J receives m_4 (and makes a_5, which it never uses).
+
+  A party's live state is Pre_s (sending chain CK_s not used yet) or
+  Post_s (m_s sent, chain moved on with KDF_CK, mk_s deleted). Every state
+  is also kept as a persistent !Leak fact so that a theft can happen at any
+  step. (A first version with one generic rule per action and the step as a
+  variable did not finish even for the "honest run exists" lemma; the
+  unrolled form below is the same protocol.)
+
+  What is abstracted:
+  - RK_0 is a fresh secret shared by the two sides. That it is secret,
+    also against a quantum attacker, is a ProVerif result
+    (swell1-handshake.pv, query on probe_rk0); here it is an assumption.
+  - One message per sending chain. Several messages per chain, skipped
+    message keys, out-of-order delivery, MAX_SKIP, the 15-day key expiry
+    are NOT modelled. Stored skipped keys would be exposed by a theft.
+  - Header encryption is dropped: dh_pub travels in clear. This only gives
+    the attacker more, so secrecy results stay valid; metadata hiding is not
+    studied.
+  - KDF_RK outputs (RK', CK) are two independent random oracles; NHK is
+    not modelled. AEAD is perfect symmetric encryption.
+  - Theft ("Reveal") hands the attacker the whole live state of one phone
+    at one step: RK, its current private ratchet key and both chain keys.
+  - "Quantum" hands the attacker every X25519 private key (discrete log).
+    It does not touch RK_0, which is protected by ML-KEM in the handshake.
+*/
+
+builtins: diffie-hellman, symmetric-encryption
+
+functions: kdf_rk/2, kdf_ck/2, kdf_mk/1, ck_next/1
+
+// Handshake result for one relationship (sid). I holds a_0 = epk_sk; J has
+// picked a_1 = ratchet_sk and derived its first sending chain (spec 7.1).
+rule Setup:
+  let EPK = 'g'^~a0
+      d1 = EPK^~a1
+      rk1 = kdf_rk(~rk0, d1)
+      ck1 = kdf_ck(~rk0, d1)
+  in
+  [ Fr(~sid), Fr(~rk0), Fr(~a0), Fr(~a1) ]
+  --[ Setup(~sid), GenKey(~sid, '0', EPK), GenKey(~sid, '1', 'g'^~a1) ]->
+  [ Post_0(~sid, ~rk0, ~a0, 'none', 'none'),
+    Pre_1(~sid, rk1, ~a1, ck1, 'none'),
+    !Leak(~sid, '0', 'post', <~rk0, ~a0, 'none', 'none'>),
+    !Leak(~sid, '1', 'pre', <rk1, ~a1, ck1, 'none'>),
+    !DHPriv(~sid, ~a0), !DHPriv(~sid, ~a1),
+    Out(EPK) ]
+
+// ---- step 1: J sends m_1, I receives it
+rule Send_1:
+  [ Pre_1(sid, rk, x, ck, ckr), Fr(~m) ]
+  --[ Secret(sid, 'none', '0', '1', ~m) ]->
+  [ Post_1(sid, rk, x, ck_next(ck), ckr),
+    !Leak(sid, '1', 'post', <rk, x, ck_next(ck), ckr>),
+    Out(<'g'^x, senc(~m, kdf_mk(ck))>) ]
+
+// The receiver holds Post_0: DH step for the receiving chain, decrypt,
+// then at once a new ratchet key and the next sending chain (spec 8.3).
+rule Recv_1:
+  let d   = peer^x
+      rks = kdf_rk(rk, d)
+      ckR = kdf_ck(rk, d)
+      d2  = peer^~an
+      rkn = kdf_rk(rks, d2)
+      ckn = kdf_ck(rks, d2)
+  in
+  [ Post_0(sid, rk, x, cks, ckrOld),
+    In(<peer, senc(m, kdf_mk(ckR))>), Fr(~an) ]
+  --[ Accept(sid, '1', peer), Recv(sid, '1', m), GenKey(sid, '2', 'g'^~an) ]->
+  [ Pre_2(sid, rkn, ~an, ckn, ck_next(ckR)),
+    !Leak(sid, '2', 'pre', <rkn, ~an, ckn, ck_next(ckR)>),
+    !DHPriv(sid, ~an) ]
+
+// ---- step 2: I sends m_2, J receives it
+rule Send_2:
+  [ Pre_2(sid, rk, x, ck, ckr), Fr(~m) ]
+  --[ Secret(sid, '0', '1', '2', ~m) ]->
+  [ Post_2(sid, rk, x, ck_next(ck), ckr),
+    !Leak(sid, '2', 'post', <rk, x, ck_next(ck), ckr>),
+    Out(<'g'^x, senc(~m, kdf_mk(ck))>) ]
+
+// The receiver holds Post_1: DH step for the receiving chain, decrypt,
+// then at once a new ratchet key and the next sending chain (spec 8.3).
+rule Recv_2:
+  let d   = peer^x
+      rks = kdf_rk(rk, d)
+      ckR = kdf_ck(rk, d)
+      d2  = peer^~an
+      rkn = kdf_rk(rks, d2)
+      ckn = kdf_ck(rks, d2)
+  in
+  [ Post_1(sid, rk, x, cks, ckrOld),
+    In(<peer, senc(m, kdf_mk(ckR))>), Fr(~an) ]
+  --[ Accept(sid, '2', peer), Recv(sid, '2', m), GenKey(sid, '3', 'g'^~an) ]->
+  [ Pre_3(sid, rkn, ~an, ckn, ck_next(ckR)),
+    !Leak(sid, '3', 'pre', <rkn, ~an, ckn, ck_next(ckR)>),
+    !DHPriv(sid, ~an) ]
+
+// ---- step 3: J sends m_3, I receives it
+rule Send_3:
+  [ Pre_3(sid, rk, x, ck, ckr), Fr(~m) ]
+  --[ Secret(sid, '1', '2', '3', ~m) ]->
+  [ Post_3(sid, rk, x, ck_next(ck), ckr),
+    !Leak(sid, '3', 'post', <rk, x, ck_next(ck), ckr>),
+    Out(<'g'^x, senc(~m, kdf_mk(ck))>) ]
+
+// The receiver holds Post_2: DH step for the receiving chain, decrypt,
+// then at once a new ratchet key and the next sending chain (spec 8.3).
+rule Recv_3:
+  let d   = peer^x
+      rks = kdf_rk(rk, d)
+      ckR = kdf_ck(rk, d)
+      d2  = peer^~an
+      rkn = kdf_rk(rks, d2)
+      ckn = kdf_ck(rks, d2)
+  in
+  [ Post_2(sid, rk, x, cks, ckrOld),
+    In(<peer, senc(m, kdf_mk(ckR))>), Fr(~an) ]
+  --[ Accept(sid, '3', peer), Recv(sid, '3', m), GenKey(sid, '4', 'g'^~an) ]->
+  [ Pre_4(sid, rkn, ~an, ckn, ck_next(ckR)),
+    !Leak(sid, '4', 'pre', <rkn, ~an, ckn, ck_next(ckR)>),
+    !DHPriv(sid, ~an) ]
+
+// ---- step 4: I sends m_4, J receives it
+rule Send_4:
+  [ Pre_4(sid, rk, x, ck, ckr), Fr(~m) ]
+  --[ Secret(sid, '2', '3', '4', ~m) ]->
+  [ Post_4(sid, rk, x, ck_next(ck), ckr),
+    !Leak(sid, '4', 'post', <rk, x, ck_next(ck), ckr>),
+    Out(<'g'^x, senc(~m, kdf_mk(ck))>) ]
+
+// The receiver holds Post_3: DH step for the receiving chain, decrypt,
+// then at once a new ratchet key and the next sending chain (spec 8.3).
+rule Recv_4:
+  let d   = peer^x
+      rks = kdf_rk(rk, d)
+      ckR = kdf_ck(rk, d)
+      d2  = peer^~an
+      rkn = kdf_rk(rks, d2)
+      ckn = kdf_ck(rks, d2)
+  in
+  [ Post_3(sid, rk, x, cks, ckrOld),
+    In(<peer, senc(m, kdf_mk(ckR))>), Fr(~an) ]
+  --[ Accept(sid, '4', peer), Recv(sid, '4', m), GenKey(sid, '5', 'g'^~an) ]->
+  [ Pre_5(sid, rkn, ~an, ckn, ck_next(ckR)),
+    !Leak(sid, '5', 'pre', <rkn, ~an, ckn, ck_next(ckR)>),
+    !DHPriv(sid, ~an) ]
+
+// Theft of one phone's live state, at any step. Every state a phone passes
+// through (Pre before sending, Post after sending) is leakable.
+rule Reveal:
+  [ !Leak(sid, s, ph, st) ] --[ Reveal(sid, s, ph), RevealAny(sid) ]-> [ Out(st) ]
+
+// A quantum attacker: every X25519 private key of the relationship.
+rule Quantum:
+  [ !DHPriv(sid, x) ] --[ Quantum(sid) ]-> [ Out(x) ]
+
+// ---------------------------------------------------------------- sanity
+// The full conversation m_1 .. m_4 can run with no attacker help.
+lemma executable:
+  exists-trace
+  "Ex sid m #i. Recv(sid, '4', m)@i
+     & not (Ex #r. RevealAny(sid)@r) & not (Ex #q. Quantum(sid)@q)"
+
+// ---------------------------------------------------------- FS and PCS
+// "Passive during healing": every ratchet key a phone accepted was really
+// made by its contact (no key injected by the attacker).
+// Claim: m_s leaks only if
+//   (a) a phone was stolen at step s before m_s was sent (sender's Pre_s), or
+//   (b) a phone was stolen at step s-1 (the receiver, while it waits), or
+//   (c) the sender was stolen right after sending m_s (Post_s, it still holds
+//       its ratchet private key a_s) AND an earlier theft at step s-2 had
+//       not healed yet (the attacker then knows RK_{s-1}).
+// So:
+//   - forward secrecy: with one theft, a theft after sending (Post_s) or at
+//     any later step never exposes m_s. Case (c) is the exception: a second
+//     theft inside the healing window of a first one. The published Double
+//     Ratchet behaves the same (a_s lives until the next DH step).
+//   - post-compromise security: a theft at step j exposes at most m_j and
+//     m_{j+1}; from m_{j+2} on (one round trip later) messages are secret.
+// A first version without (c) was FALSIFIED by Tamarin (see FORMAL-RESULTS).
+lemma fs_pcs_classical_passive:
+  "All sid spp sp s m #i #j.
+     Secret(sid, spp, sp, s, m)@i & K(m)@j
+     & not (Ex #q. Quantum(sid)@q)
+     & (All t pub #k. Accept(sid, t, pub)@k ==> Ex #g. GenKey(sid, t, pub)@g)
+   ==> (Ex #r. Reveal(sid, s, 'pre')@r)
+     | (Ex ph #r. Reveal(sid, sp, ph)@r)
+     | ((Ex #r. Reveal(sid, s, 'post')@r) & (Ex ph #r. Reveal(sid, spp, ph)@r))"
+
+// Plain forward secrecy, as a separate statement: if the only theft
+// happens after m_s was sent (or later), m_s stays secret.
+lemma fs_single_theft_after_send:
+  "All sid spp sp s m #i #j #r t ph.
+     Secret(sid, spp, sp, s, m)@i & K(m)@j & Reveal(sid, t, ph)@r
+     & not (Ex t2 ph2 #r2. Reveal(sid, t2, ph2)@r2 & not (#r2 = #r))
+     & not (Ex #q. Quantum(sid)@q)
+     & (All t3 pub #k. Accept(sid, t3, pub)@k ==> Ex #g. GenKey(sid, t3, pub)@g)
+   ==> (t = s & ph = 'pre') | t = sp"
+
+// Control: the bound above is tight, so the lemma is not vacuous. A theft of
+// J right after it sent m_1 (step 1) exposes I's reply m_2.
+lemma pcs_bound_is_tight:
+  exists-trace
+  "Ex sid spp m #i #j #r.
+     Secret(sid, spp, '1', '2', m)@i & K(m)@j & Reveal(sid, '1', 'post')@r
+     & not (Ex #q. Quantum(sid)@q)
+     & not (Ex s ph #r2. Reveal(sid, s, ph)@r2 & not (#r2 = #r))
+     & (All t pub #k. Accept(sid, t, pub)@k ==> Ex #g. GenKey(sid, t, pub)@g)"
+
+// Same claim against an active classical attacker: expected to FAIL.
+// After a theft the attacker can keep injecting its own ratchet keys and
+// stay in the middle for ever. Every published ratchet, Signal included,
+// has this limit; only a later safety-number check or a new invite ends it.
+lemma fs_pcs_classical_active:
+  "All sid spp sp s m #i #j.
+     Secret(sid, spp, sp, s, m)@i & K(m)@j
+     & not (Ex #q. Quantum(sid)@q)
+   ==> (Ex #r. Reveal(sid, s, 'pre')@r)
+     | (Ex ph #r. Reveal(sid, sp, ph)@r)
+     | ((Ex #r. Reveal(sid, s, 'post')@r) & (Ex ph #r. Reveal(sid, spp, ph)@r))"
+
+// ---------------------------------------------------------- post-quantum
+// Harvest now, decrypt later (and stronger: an active quantum attacker).
+// With no theft, every message stays secret even if all X25519 keys break,
+// because every root key descends from RK_0, which ML-KEM protects.
+lemma pq_secrecy_no_theft:
+  "All sid spp sp s m #i #j.
+     Secret(sid, spp, sp, s, m)@i & K(m)@j ==> Ex #r. RevealAny(sid)@r"
+
+// Expected attack: draft 1 has no post-quantum recovery after theft
+// (spec sections 3 and 14). One theft of J right after it sent m_1, plus a
+// quantum break, exposes the last message m_4 (which the classical lemma
+// shows is healed), even with a passive network.
+lemma pq_no_healing_after_theft:
+  exists-trace
+  "Ex sid m #i #j #r #q.
+     Secret(sid, '2', '3', '4', m)@i & K(m)@j & Reveal(sid, '1', 'post')@r
+     & Quantum(sid)@q
+     & not (Ex s ph #r2. Reveal(sid, s, ph)@r2 & not (#r2 = #r))
+     & (All t pub #k. Accept(sid, t, pub)@k ==> Ex #g. GenKey(sid, t, pub)@g)"
+
+end
