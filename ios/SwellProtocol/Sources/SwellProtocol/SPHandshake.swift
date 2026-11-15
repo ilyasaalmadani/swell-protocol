@@ -118,6 +118,10 @@ public enum SPHandshake {
     /// Direct-onion invite (version 6): `SHA256Tagged("direct", secret)`.
     public static func directBinding(secret: [UInt8]) -> [UInt8] { SP.tagged("direct", secret) }
 
+    /// The `secret` of a version 5 HELLO frame (spec 5.5, review B27 H1): `SHA256Tagged("hello", sealKey)`. The frame goes into the
+    /// invite queue beside the sealed bundle, so it must never carry `sealKey` itself: the mailbox operator could open the bundle.
+    public static func helloSecret(sealKey: [UInt8]) -> [UInt8] { SP.tagged("hello", sealKey) }
+
     /// `binding = SHA256Tagged("upgrade", channelId | lo | hi | offerId)`, with `lo`, `hi` the two serialized identity keys
     /// (33 bytes each, `SPIdentity.serialized`) in unsigned byte order. Used by the link path (6.4).
     public static func upgradeBinding(channelId: [UInt8], identityA: [UInt8], identityB: [UInt8], offerId: [UInt8]) -> [UInt8] {

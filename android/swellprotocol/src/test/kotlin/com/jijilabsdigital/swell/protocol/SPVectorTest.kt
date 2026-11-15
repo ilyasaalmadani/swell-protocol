@@ -424,8 +424,15 @@ class SPVectorTest {
         val now = 1_800_000_000_000L
         for (c in v.getJSONArray("hello").objects()) {
             val version = c.getInt("version")
-            val (binding, frameSecret) = if (version == 5) v5.binding to v5.sealKey else v6.binding to v6.secret
+            val (binding, frameSecret) = if (version == 5) v5.binding to v5.helloSecret else v6.binding to v6.secret
             assertEquals(c.getString("binding"), binding.hx())
+            // Review B27 H1: a version 5 HELLO never carries the seal key.
+            assertEquals(c.getString("frameSecret"), frameSecret.hx())
+            if (version == 5) {
+                assertEquals(j5.getString("helloSecret"), v5.helloSecret.hx())
+                assertEquals(SP.tagged("hello", v5.sealKey).hx(), v5.helloSecret.hx())
+                assertFalse(v5.helloSecret.contentEquals(v5.sealKey))
+            }
             val replay = Vectors.Replay(c.getJSONArray("entropy").strings().map(Vectors::hex),
                 listOf(SP.KemEncapsulation(c.getJSONObject("kem").b("ct"), c.getJSONObject("kem").b("ss"))))
             val h = SP.withEntropy(replay) { SPHandshake.joinerStart(secrets.bundle, inviter.publicKey, joiner, binding, inner, now) }

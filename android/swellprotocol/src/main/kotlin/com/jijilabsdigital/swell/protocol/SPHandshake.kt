@@ -127,6 +127,12 @@ object SPHandshake {
     /** Binding of a direct-onion invite (version 6): `SHA256Tagged("direct", secret)`. A mailbox invite (version 5) uses its `queueId`. */
     fun directBinding(secret: ByteArray): ByteArray = SP.tagged("direct", secret)
 
+    /**
+     * The `secret` of a version 5 HELLO frame (spec 5.5, review B27 H1): `SHA256Tagged("hello", sealKey)`. The frame waits in the invite
+     * queue beside the sealed bundle, so it must never carry `sealKey` itself: the mailbox operator could open the bundle and redeem the code.
+     */
+    fun helloSecret(sealKey: ByteArray): ByteArray = SP.tagged("hello", sealKey)
+
     /** `binding = SHA256Tagged("upgrade", channelId | lo | hi | offerId)`, `lo`, `hi` the two serialized identity keys in unsigned byte order. */
     fun upgradeBinding(channelId: ByteArray, identityA: ByteArray, identityB: ByteArray, offerId: ByteArray): ByteArray {
         val (lo, hi) = if (SP.lexLess(identityA, identityB)) identityA to identityB else identityB to identityA

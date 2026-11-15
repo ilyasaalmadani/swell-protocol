@@ -24,6 +24,8 @@ sealed class SPInvite {
     /** Version 5: the bundle waits sealed in the queue [queueId] on [mailbox]. */
     class Mailbox(val mailbox: String, val queueId: ByteArray, val sealKey: ByteArray, override val identityKey: ByteArray) : SPInvite() {
         override val binding: ByteArray get() = queueId
+        /** What the HELLO frame carries in place of a secret (spec 5.5): `SHA256Tagged("hello", sealKey)`, never [sealKey]. */
+        val helloSecret: ByteArray get() = SPHandshake.helloSecret(sealKey)
         override fun payload(): ByteArray = SPOut().u8(V_MAILBOX).str(mailbox).raw(queueId).raw(sealKey).bytes(identityKey).done()
 
         /** `raw12 nonce | AES-256-GCM(sealKey, nonce, aad = queueId, bundle)`. [nonce] is random except in tests. */
