@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/brand/swell-protocol-icon.png" width="96" height="96" alt="SwellProtocol">
+</p>
+
 # SwellProtocol
 
 The end-to-end encryption library of Swell Messenger, by PT JIJI LABS DIGITAL ("Jiji Labs"), Indonesia.
