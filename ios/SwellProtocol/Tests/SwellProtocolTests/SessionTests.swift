@@ -219,6 +219,23 @@ final class SwellProtocolSessionTests: XCTestCase {
         XCTAssertThrowsError(try SPSession.decode(Array(i.encode().dropLast())))
     }
 
+    /// A damaged record that keeps a header key but lost its chain key (or another key every state holds) is refused at decode, so a
+    /// later receive never reaches the precondition of SP.expand (found with the Kotlin fuzz target SessionRecordFuzzer).
+    func testDamagedRecordWithHalfAChainIsRefused() throws {
+        var (i, j) = try handshake()
+        let (i1, e1) = try i.encrypt(text("one"), now: now, policy: fast); i = i1
+        let (_, e2) = try i.encrypt(text("two"), now: now, policy: fast)
+        (j, _) = try j.decrypt(e1, now: now, policy: fast)
+        let damages: [(inout SPSession) -> Void] = [{ $0.ckr = [] }, { $0.hkr = [] }, { $0.cks = [] }, { $0.hks = [] },
+                                                     { $0.nhkr = [] }, { $0.nhks = [] }, { $0.dhr = [] }]
+        for damage in damages {
+            var bad = j
+            damage(&bad)
+            XCTAssertThrowsError(try SPSession.decode(bad.encode()))
+        }
+        XCTAssertEqual(try SPSession.decode(j.encode()).decrypt(e2, now: now, policy: fast).1, text("two"))
+    }
+
     /// Spec 8.3 step 2: candidate header keys are distinct values; a key stored twice (skipped and current) is tried once.
     func testDuplicateCandidateKeysCollapse() throws {
         let (i, j) = try handshake()

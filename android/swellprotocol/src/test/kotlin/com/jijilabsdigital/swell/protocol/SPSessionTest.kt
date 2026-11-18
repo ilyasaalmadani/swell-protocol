@@ -147,6 +147,19 @@ class SPSessionTest {
         assertFailsWith<SwellProtocolError> { SPSession.decode(p.i.encode().also { it[0] = 9 }) }
     }
 
+    /** A damaged record that keeps a header key but lost its chain key (or another key every state holds) is refused at decode (fuzzing). */
+    @Test fun damagedRecordWithHalfAChainIsRefused() {
+        val fresh = connect()
+        assertContentEquals(fresh.j.encode(), SPSession.decode(fresh.j.encode()).encode()) // J before any reply: no HKr, no CKr
+        val p = connect()
+        val e1 = p.iSends("one".toByteArray()); val e2 = p.iSends("two".toByteArray())
+        p.jReads(e1) // J now holds HKr and CKr; e2 is on that chain
+        val damages = listOf<(SPSession) -> Unit>({ it.ckr = ByteArray(0) }, { it.hkr = ByteArray(0) }, { it.cks = ByteArray(0) },
+            { it.hks = ByteArray(0) }, { it.nhkr = ByteArray(0) }, { it.nhks = ByteArray(0) }, { it.dhr = ByteArray(0) })
+        for (damage in damages) assertFailsWith<SwellProtocolError.Format> { SPSession.decode(p.j.copy().also(damage).encode()) }
+        assertContentEquals("two".toByteArray(), SPSession.decode(p.j.encode()).decrypt(e2, now).inner)
+    }
+
     @Test fun bareBucketsAndPQRepeat() {
         val p = connect()
         p.jReads(p.iSends("x".toByteArray()))

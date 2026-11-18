@@ -227,6 +227,12 @@ public struct SPSession: Sendable {
         }
         let dhr = try opt(), rk = try r.raw(32), cks = try opt(), ckr = try opt()
         let hks = try opt(), hkr = try opt(), nhks = try opt(), nhkr = try opt()
+        // Every state the protocol makes holds DHr, NHKs and NHKr, and a chain key exactly when its header key is set (7.1, 8.3).
+        // A record without that shape is damaged: refuse it here, so no later send or receive meets a half state (a precondition trap
+        // in SP.expand). Found with the Kotlin fuzz target SessionRecordFuzzer; the two decoders keep the same rule.
+        guard dhr.count == 32, nhks.count == 32, nhkr.count == 32, cks.count == hks.count, ckr.count == hkr.count else {
+            throw SwellProtocolError.format("session keys")
+        }
         let ns = try r.i32(), nr = try r.i32(), pn = try r.i32()
         guard (0...(1 << 24)).contains(ns), (0...(1 << 24)).contains(nr), (0...(1 << 24)).contains(pn) else { throw SwellProtocolError.format("counters") }
         let count = Int(try r.i32())

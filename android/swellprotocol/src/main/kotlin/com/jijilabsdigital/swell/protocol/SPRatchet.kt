@@ -259,6 +259,10 @@ class SPSession(
             }
             val dhr = opt(); val rk = r.raw(32); val cks = opt(); val ckr = opt()
             val hks = opt(); val hkr = opt(); val nhks = opt(); val nhkr = opt()
+            // Every state the protocol makes holds DHr, NHKs and NHKr, and a chain key exactly when its header key is set (7.1, 8.3).
+            // A record without that shape is damaged: refuse it here, so no later send or receive meets a half state (fuzz target SessionRecordFuzzer).
+            if (dhr.size != 32 || nhks.size != 32 || nhkr.size != 32 || cks.size != hks.size || ckr.size != hkr.size)
+                throw SwellProtocolError.Format("session keys")
             val ns = r.i32(); val nr = r.i32(); val pn = r.i32()
             val limit = 1 shl 24
             if (ns !in 0..limit || nr !in 0..limit || pn !in 0..limit) throw SwellProtocolError.Format("counters")
