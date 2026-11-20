@@ -19,5 +19,5 @@ dependencies {
     api("org.bouncycastle:bcprov-jdk18on:1.79")
     testImplementation(kotlin("test-junit"))
     // JSON reader for the shared vectors in docs/protocol-vectors/ (tests only).
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
 }

@@ -21,7 +21,7 @@ kotlin {
 dependencies {
     implementation(project(":swellprotocol"))
     // JSON reader for the seed corpus generator (SeedCorpus.kt) only.
-    implementation("org.json:json:20240303")
+    implementation("org.json:json:20260814")
 }
 
 val vectors = rootProject.projectDir.resolve("../docs/protocol-vectors")
