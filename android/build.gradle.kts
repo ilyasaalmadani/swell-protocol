@@ -1,1 +1,1 @@
-plugins { id("org.jetbrains.kotlin.jvm") version "2.2.20" apply false }
+plugins { id("org.jetbrains.kotlin.jvm") version "2.4.21" apply false }
