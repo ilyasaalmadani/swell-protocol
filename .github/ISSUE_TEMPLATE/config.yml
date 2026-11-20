@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/swellchat/swell-protocol/security/advisories/new
+    about: Report vulnerabilities privately here, never in a public issue. See SECURITY.md.
+  - name: Swell app or server security
+    url: https://getswell.org/security
+    about: The Swell app and server are not in this repository. Report problems with them here.

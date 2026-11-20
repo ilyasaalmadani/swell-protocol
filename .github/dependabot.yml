@@ -1,0 +1,11 @@
+# Dependabot version updates. This is not GitHub Actions; there is no CI in this repository.
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/android"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "swift"
+    directory: "/ios/SwellProtocol"
+    schedule:
+      interval: "weekly"
