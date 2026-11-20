@@ -16,7 +16,7 @@ kotlin {
 
 dependencies {
     // X25519 and ML-KEM-768 (FIPS 203): BouncyCastle, MIT licence. Lightweight API only, so Android's built-in "BC" provider is never touched.
-    api("org.bouncycastle:bcprov-jdk18on:1.79")
+    api("org.bouncycastle:bcprov-jdk18on:1.87")
     testImplementation(kotlin("test-junit"))
     // JSON reader for the shared vectors in docs/protocol-vectors/ (tests only).
     testImplementation("org.json:json:20240303")
